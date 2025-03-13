@@ -1,3 +1,4 @@
+from glob import glob
 try:
     from setuptools import setup, find_packages
 except ImportError:
@@ -27,5 +28,5 @@ setup(
     packages=find_packages(),
     package_dir={"honeybee_comb_inferer": "honeybee_comb_inferer/"},
     include_package_data=True,
-    data_files={'models': ['models/*.pth']}
+    data_files=[('models', glob('models/*.pth'))]
 )
