@@ -1,2 +1,1 @@
-Folder for pre-trained model's state-dicts.
-Can be downloaded from: https://www.dropbox.com/sh/2b8vcr0mwdsqwpb/AACLDpQ1F8Qxt-1zR_MY_NeJa?dl=0
+Other models can be downloaded from: https://www.dropbox.com/sh/2b8vcr0mwdsqwpb/AACLDpQ1F8Qxt-1zR_MY_NeJa?dl=0

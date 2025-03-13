@@ -20,12 +20,12 @@ setup(
     version="0.1.0",
     author="Ivan Matoshchuk",
     author_email="ivan.matoshchuk@gmail.com",
-    url="https://github.com/IvanMatoshchuk/honeybee_cells_segmentation_inference",
+    url="https://github.com/BioroboticsLab/honeybee_cells_segmentation_inference/",
     description="Inference pipeline for segmentation of a honey bee comb",
     install_requires=reqs,
     dependency_links=dep_links,
     packages=find_packages(),
     package_dir={"honeybee_comb_inferer": "honeybee_comb_inferer/"},
     include_package_data=True,
-    package_data={'': ['models/*.pth']}
+    data_files={'models': ['models/*.pth']}
 )
