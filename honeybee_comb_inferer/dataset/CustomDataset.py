@@ -13,8 +13,11 @@ project_path = Path(__file__).parent.parent.parent
 class CustomDataset(Dataset):
     def __init__(self, images_path: str = "data/images"):
         self.images_folder = os.path.join(project_path, images_path)
-
-        self.images = [i for i in os.listdir(self.images_folder) if i != "README.md"]
+        valid_extensions = ('.jpg', '.jpeg', '.png', '.bmp', '.tif', '.tiff')
+        self.images = [
+            i for i in os.listdir(self.images_folder)
+            if i != "README.md" and i.lower().endswith(valid_extensions)
+        ]
         self.transforms = self.get_transforms()
 
     def get_transforms(self) -> A.core.composition.Compose:
@@ -28,6 +31,10 @@ class CustomDataset(Dataset):
         img_path = os.path.join(self.images_folder, self.images[index])
 
         image = cv2.imread(img_path, 0)
+        if image is None:
+            # Log a warning and optionally skip this file or handle it in a defined way
+            print(f"Warning: Could not load image: {img_path}")
+            raise ValueError(f"Image {img_path} could not be loaded.")
 
         height = image.shape[0] // 32 * 32
         width = image.shape[1] // 32 * 32

@@ -151,6 +151,48 @@ class HoneyBeeCombInferer:
         diff_width = int(diff_in_dims[1, 0])
 
         return self._pad_mask_to_input_dim(inferred_mask, diff_height=diff_height, diff_width=diff_width)
+    
+    def infer_without_bees_opt(self, images_path: str) -> np.ndarray:
+        """
+        More memory-efficient version that computes a running average of the predicted logits.
+        Processes the images in batches and updates a running sum instead of storing all outputs.
+        """
+        dataset = CustomDataset(images_path)
+        dataloader = DataLoader(dataset=dataset, **self.config["dataloader"])
+        
+        running_sum = None
+        batch_count = 0
+        diff_dims = None  # We'll capture diff_in_dims from the first batch
+        
+        for image, image_path, diff_in_dims in tqdm(dataloader):
+            try:
+                logits = self.infer(image.to(self.device), return_logits=True)
+            except Exception as e:
+                print(f"Skipping batch due to error: {e}")
+                continue
+            # Apply softmax to get probabilities and move to CPU
+            inferred_logits = torch.softmax(logits.detach(), dim=1).cpu()
+            # Adjust class weights as before
+            inferred_logits = self._adjust_class_weights(inferred_logits)
+            # Compute the mean for this batch
+            batch_mean = inferred_logits.mean(dim=0)  # shape: (num_classes, H, W)
+            
+            if running_sum is None:
+                running_sum = batch_mean
+                diff_dims = diff_in_dims[0]  # Capture diff dims from first batch (assumed constant)
+            else:
+                running_sum += batch_mean
+            batch_count += 1
+
+        # Compute the final averaged logits
+        final_logits = running_sum / batch_count
+        # Apply softmax again (if desired) then get the predicted mask
+        final_logits = torch.softmax(final_logits, dim=0)
+        final_mask = torch.argmax(final_logits, dim=0).detach().cpu().numpy()
+        
+        # Use the captured diff dimensions to pad back to original image size
+        diff_height, diff_width = diff_dims[0], diff_dims[1]
+        return self._pad_mask_to_input_dim(final_mask, diff_height=diff_height, diff_width=diff_width)
 
     def _get_mask(self, inferred_logits: Tensor) -> Tensor:
 
@@ -208,14 +250,28 @@ class HoneyBeeCombInferer:
         else:
             return image
 
+    def get_processed_labels(        
+        self,
+        pred: Tensor
+    ):
+        # label_processed = np.array([[self.cmap[int(i)] for i in j] for j in tqdm(pred)])  # nested loop label map processing (slower)
+        # vectorized label map processing
+        max_label = max(self.cmap.keys())
+        color_map = np.zeros((max_label + 1, 4), dtype=np.float32)
+        # Fill in the color_map with values from self.cmap
+        for label, color in self.cmap.items():
+            color_map[label] = color
+        label_processed = color_map[pred]  # shape will be (H, W, 4)       
+        return label_processed
+
     def plot_prediction(
         self,
         pred: Tensor,
         input_image: Optional[Union[np.ndarray, str]] = None,
         mask: Optional[np.ndarray] = None,
-    ) -> None:
+    ):
 
-        label_processed = np.array([[self.cmap[int(i)] for i in j] for j in tqdm(pred)])
+        label_processed = get_processed_labels(pred)
 
         if input_image is not None and mask is not None:
             fig, ax = plt.subplots(3, 1, figsize=(36, 28))
@@ -253,9 +309,8 @@ class HoneyBeeCombInferer:
             ax.set_title("predicted")
 
         plt.legend(handles=self.patches, bbox_to_anchor=(1.05, 1), loc=2, borderaxespad=0.0)
-        plt.show()
 
-        return None
+        return fig, ax
 
     def _save_batch_inference(self, pred: Tensor, input_image_path: str) -> None:
 
