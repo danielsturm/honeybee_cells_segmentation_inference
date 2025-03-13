@@ -271,7 +271,7 @@ class HoneyBeeCombInferer:
         mask: Optional[np.ndarray] = None,
     ):
 
-        label_processed = get_processed_labels(pred)
+        label_processed = self.get_processed_labels(pred)
 
         if input_image is not None and mask is not None:
             fig, ax = plt.subplots(3, 1, figsize=(36, 28))
