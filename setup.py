@@ -26,7 +26,6 @@ setup(
     dependency_links=dep_links,
     packages=find_packages(),
     package_dir={"honeybee_comb_inferer": "honeybee_comb_inferer/"},
-    # package_data={"honeybee_comb_inferer": ["config/config.yaml", "config/label_classes.json"]},
-    # package_data={"honeybee-comb-inferer": ["*"]},
-    # data_files=[("config-honeybee-comb", ["config/config.yaml"]), ("label-classes", ["data/label_classes.json"])],
+    include_package_data=True,
+    package_data={'': ['models/*.pth']}
 )

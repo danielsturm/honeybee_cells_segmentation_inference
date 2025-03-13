@@ -2,7 +2,7 @@
 .vscode
 
 # trained models
-*.pth
+#*.pth
 
 # images
 *.png
