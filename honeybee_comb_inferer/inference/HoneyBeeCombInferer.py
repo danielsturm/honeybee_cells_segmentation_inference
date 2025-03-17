@@ -52,12 +52,10 @@ class HoneyBeeCombInferer:
             >>> model = HoneyBeeCombInferer(model_name = 'model-name', path_to_pretrained_models = 'path-to-pretrained-models', device = 'cuda')
             >>> model.infer(image = 'path-to-image')
         """
-
         self.device = device
         self.sw_inferer = sw_inference
 
         self.config = self._get_config(config)
-
         self.cmap, self.patches = get_cmap_and_labels_for_plotting(label_classes_config)
 
         self.model = HoneyBeeCombSegmentationModel(
@@ -152,41 +150,46 @@ class HoneyBeeCombInferer:
 
         return self._pad_mask_to_input_dim(inferred_mask, diff_height=diff_height, diff_width=diff_width)
     
-    def infer_without_bees_opt(self, images_path: str) -> np.ndarray:
+    def infer_without_bees_opt(self, images_path: str, skip: int = 1) -> np.ndarray:
         """
         More memory-efficient version that computes a running average of the predicted logits.
         Processes the images in batches and updates a running sum instead of storing all outputs.
         """
         dataset = CustomDataset(images_path)
         dataloader = DataLoader(dataset=dataset, **self.config["dataloader"])
-        
+
         running_sum = None
         batch_count = 0
         diff_dims = None  # We'll capture diff_in_dims from the first batch
-        
-        for image, image_path, diff_in_dims in tqdm(dataloader):
-            try:
-                logits = self.infer(image.to(self.device), return_logits=True)
-            except Exception as e:
-                print(f"Skipping batch due to error: {e}")
-                continue
-            # Apply softmax to get probabilities and move to CPU
-            inferred_logits = torch.softmax(logits.detach(), dim=1).cpu()
-            # Adjust class weights as before
-            inferred_logits = self._adjust_class_weights(inferred_logits)
-            # Compute the mean for this batch
-            batch_mean = inferred_logits.mean(dim=0)  # shape: (num_classes, H, W)
-            
-            if running_sum is None:
-                running_sum = batch_mean
-                diff_dims = diff_in_dims[0]  # Capture diff dims from first batch (assumed constant)
-            else:
-                running_sum += batch_mean
-            batch_count += 1
+        with torch.no_grad():
+            for idx, (image, image_path, diff_in_dims) in enumerate(tqdm(dataloader)):
+                # Process only every skip-th batch
+                if idx % skip != 0:
+                    continue
+                try:
+                    logits = self.infer(image.to(self.device), return_logits=True)
+                except Exception as e:
+                    print(f"Skipping batch due to error: {e}")
+                    continue
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                # Apply softmax to get probabilities and move to CPU
+                inferred_logits = torch.softmax(logits.detach(), dim=1).cpu()
+                # Adjust class weights as before
+                inferred_logits = self._adjust_class_weights(inferred_logits)
+                # Compute the mean for this batch
+                batch_mean = inferred_logits.mean(dim=0)  # shape: (num_classes, H, W)
+                
+                if running_sum is None:
+                    running_sum = batch_mean
+                    diff_dims = diff_in_dims[0]  # Capture diff dims from first batch (assumed constant)
+                else:
+                    running_sum += batch_mean
+                batch_count += 1
 
         # Compute the final averaged logits
         final_logits = running_sum / batch_count
-        # Apply softmax again (if desired) then get the predicted mask
+        # Apply softmax again then get the predicted mask (does same this as _get_mask_no_bees, using the running sum
         final_logits = torch.softmax(final_logits, dim=0)
         final_mask = torch.argmax(final_logits, dim=0).detach().cpu().numpy()
         
@@ -337,3 +340,4 @@ class HoneyBeeCombInferer:
             raise Exception(
                 f"'config' should be of type <str> (path) or <dict>, but you provided type <{type(config)}>"
             )
+        
