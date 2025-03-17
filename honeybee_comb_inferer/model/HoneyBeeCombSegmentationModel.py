@@ -4,7 +4,7 @@ import torch
 from torch import Tensor
 import segmentation_models_pytorch as smp
 
-mapping_dict = {"effnetb0": "efficientnet-b0", "mobilenetv3": "timm-mobilenetv3_small_100", "resnet18": "resnet18"}
+mapping_dict = {"effnetb0": "efficientnet-b0", "mobilenetv3": "timm-mobilenetv3_small_100", "resnet18": "resnet18", "resnet34": "resnet34"}
 
 
 class HoneyBeeCombSegmentationModel:
