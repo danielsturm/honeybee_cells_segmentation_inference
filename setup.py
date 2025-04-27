@@ -25,8 +25,8 @@ setup(
     description="Inference pipeline for segmentation of a honey bee comb",
     install_requires=reqs,
     dependency_links=dep_links,
-    packages=find_packages(),
-    package_dir={"honeybee_comb_inferer": "honeybee_comb_inferer/"},
+    packages=find_packages(include=["honeybee_comb_inferer*", "segmentation_restruct*"]),
+    #package_dir={"honeybee_comb_inferer": "honeybee_comb_inferer/"},
     include_package_data=True,
     data_files=[('models', glob('models/*.pth'))]
 )
