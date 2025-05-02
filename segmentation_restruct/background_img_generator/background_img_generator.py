@@ -119,3 +119,156 @@ class BackgroundImageGenerator:
 
     def _save_image(self, image: np.ndarray, output_path: Path) -> None:
         cv2.imwrite(str(output_path), image)
+
+    def create_background_masked_median_mode(
+        self,
+        # folder,
+        window_size=10,
+        tile_size=(512, 512),
+        sampling_rate=5,
+        use_median=True,
+    ):
+
+        # masked_folder = os.path.join(folder, "masked")
+        # file_list = sorted(glob(os.path.join(masked_folder, "*.[pj][np][ge]*")))
+        file_list = sorted(self.masked_img_dir.glob("*.[pj][np][ge]*"))
+        # Filter out any existing background or unneeded files
+        file_list = [f for f in file_list if "background" not in f.name.lower()]
+        file_list = file_list[::sampling_rate]
+        file_name = file_list[-1].name
+        num_files = len(file_list)
+        print("Number of masked images:", num_files)
+
+        if num_files < window_size:
+            raise ValueError(
+                "Not enough images to apply rolling median; adjust window_size or sampling_rate."
+            )
+
+        def read_image(filepath) -> cv2.typing.MatLike:
+            return cv2.imread(filepath, cv2.IMREAD_GRAYSCALE)
+
+        # Read first image to get shape
+        first_img = read_image(file_list[0])
+        if first_img is None:
+            raise ValueError("Cannot read the first masked image.")
+        H, W = first_img.shape
+        print(f"Image shape: {H} x {W}")
+
+        num_medians = num_files - window_size + 1
+        print("Number of median images to produce:", num_medians)
+
+        # Create a memmap file to hold the 'median images'
+        # memmap_file = os.path.join(tempfile.gettempdir(), "median_images.dat")
+        memmap_file = Path(tempfile.gettempdir()) / "median_images.dat"
+
+        median_memmap = np.memmap(
+            memmap_file, dtype="uint8", mode="w+", shape=(num_medians, H, W)
+        )
+
+        # Rolling median setup (ignoring black pixels in each window)
+        window_imgs = []
+        for f in file_list[: window_size - 1]:
+            img = read_image(f)
+            if img is not None:
+                window_imgs.append(img)
+
+        median_index = 0
+        for f in tqdm(
+            file_list[window_size - 1 :], desc="Computing rolling medians (masked)"
+        ):
+            img = read_image(f)
+            if img is None:
+                continue
+            window_imgs.append(img)
+            if len(window_imgs) == window_size:
+                # Stack images: shape = (window_size, H, W)
+                stack_ = np.stack(window_imgs, axis=0)
+                # Create a masked array where pixels equal to 0 are masked out
+                masked_stack = np.ma.masked_equal(stack_, 0)
+                # Compute median along axis=0, ignoring masked (black) pixels.
+                # For pixels where all values are masked, fill with 0.
+                median_img = (
+                    np.ma.median(masked_stack, axis=0).filled(0).astype(np.uint8)
+                )
+                median_memmap[median_index, :, :] = median_img
+                median_index += 1
+                window_imgs.pop(0)
+
+        median_memmap.flush()
+        print("Rolling median images computed.")
+
+        # Now compute the final pixel ignoring black, either via median or mode
+        median_memmap = np.memmap(
+            memmap_file, dtype="uint8", mode="r", shape=(num_medians, H, W)
+        )
+        background = np.zeros((H, W), dtype=np.uint8)
+
+        n_tiles_y = math.ceil(H / tile_size[0])
+        n_tiles_x = math.ceil(W / tile_size[1])
+        print(
+            f"Processing background in {n_tiles_y} x {n_tiles_x} tiles, ignoring black=0 pixels..."
+        )
+
+        def process_tile(i, j):
+            i_end = min(i + tile_size[0], H)
+            j_end = min(j + tile_size[1], W)
+            # Extract tile of shape (num_medians, tile_h, tile_w)
+            tile_stack = median_memmap[:, i:i_end, j:j_end]
+            N, th, tw = tile_stack.shape
+
+            # Flatten each (th, tw) patch across N frames => shape (N, th*tw)
+            tile_flat = tile_stack.reshape(N, -1)
+            out_tile = np.zeros((th * tw,), dtype=np.uint8)
+
+            for k in range(th * tw):
+                pixel_values = tile_flat[:, k]
+                # Filter out zeros
+                nonzero = pixel_values[pixel_values != 0]
+                if len(nonzero) == 0:
+                    # No valid data => keep it black
+                    out_tile[k] = 0
+                else:
+                    if use_median:
+                        out_tile[k] = np.median(nonzero).astype(np.uint8)
+                    else:
+                        # Use mode from scipy, ignoring zeros
+                        # The mode can return multiple values, but we only need the first
+                        val, _ = mode(nonzero, keepdims=True)
+                        out_tile[k] = val[0].astype(np.uint8)
+
+            return i, i_end, j, j_end, out_tile.reshape(th, tw)
+
+        # Parallel tile processing
+        results = Parallel(n_jobs=8)(
+            delayed(process_tile)(i, j)
+            for i in range(0, H, tile_size[0])
+            for j in range(0, W, tile_size[1])
+        )
+
+        for i, i_end, j, j_end, tile_result in results:
+            background[i:i_end, j:j_end] = tile_result
+
+        # Display and save
+        # out_path = os.path.join(folder, "background_masked_ignoreblack.png")
+        out_path = self.background_img_dir / f"background_{file_name}.png"
+        cv2.imwrite(out_path, background)
+        print("Masked background (ignoring black) saved to:", out_path)
+
+        del median_memmap
+        import gc
+
+        gc.collect()
+
+        # Then safely delete the file if you want
+        if memmap_file.exists():
+            memmap_file.unlink()
+            print(f"Deleted temporary memmap file {memmap_file}")
+
+        # plt.figure(figsize=(24, 16))
+        # plt.imshow(background, cmap="gray")
+        # if use_median:
+        #     plt.title("Background from masked frames (Median, ignoring black)")
+        # else:
+        #     plt.title("Background from masked frames (Mode, ignoring black)")
+        # plt.axis("off")
+        # plt.show()
