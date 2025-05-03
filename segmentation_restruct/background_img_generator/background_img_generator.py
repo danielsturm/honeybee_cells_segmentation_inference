@@ -81,11 +81,6 @@ class BackgroundImageGenerator:
         Path.mkdir(background_img_dir, parents=True, exist_ok=True)
         return masked_img_dir, background_img_dir
 
-    def create_background_image_version_2(self) -> None:
-        images, img_name = self._load_grayscale_images(self.masked_img_dir, 10, 0)
-        background = self._compute_background_image(images)
-        self._save_image(background, self.background_img_dir / img_name)
-
     def _read_image(self, filepath: Path) -> cv2.typing.MatLike:
         return cv2.imread(filepath, cv2.IMREAD_GRAYSCALE)
 
@@ -141,23 +136,6 @@ class BackgroundImageGenerator:
                 # background = self._compute_background_image(window_imgs)
                 # self._save_image(background, self.background_img_dir / bg_img_name)
                 image_queue.popleft()
-
-    def _load_grayscale_images(
-        self,
-        folder: Path,
-        window_size: int = 5,
-        start_index: int = 0,
-    ) -> list[np.ndarray]:
-        image_paths = self._find_images_by_path(folder)
-        selected_paths = image_paths[start_index : start_index + window_size]
-        image_name = (
-            selected_paths[-1].name.replace("masked", "background", 1)
-            if selected_paths
-            else None
-        )
-        return [
-            cv2.imread(str(path), cv2.IMREAD_GRAYSCALE) for path in selected_paths
-        ], image_name
 
     def _compute_background_image(self, images: list[np.ndarray]) -> np.ndarray:
         assert images, "No images provided."
@@ -329,3 +307,25 @@ class BackgroundImageGenerator:
         #     plt.title("Background from masked frames (Mode, ignoring black)")
         # plt.axis("off")
         # plt.show()
+
+    # def create_background_image_version_2(self) -> None:
+    #     images, img_name = self._load_grayscale_images(self.masked_img_dir, 10, 0)
+    #     background = self._compute_background_image(images)
+    #     self._save_image(background, self.background_img_dir / img_name)
+
+    # def _load_grayscale_images(
+    #     self,
+    #     folder: Path,
+    #     window_size: int = 5,
+    #     start_index: int = 0,
+    # ) -> list[np.ndarray]:
+    #     image_paths = self._find_images_by_path(folder)
+    #     selected_paths = image_paths[start_index : start_index + window_size]
+    #     image_name = (
+    #         selected_paths[-1].name.replace("masked", "background", 1)
+    #         if selected_paths
+    #         else None
+    #     )
+    #     return [
+    #         cv2.imread(str(path), cv2.IMREAD_GRAYSCALE) for path in selected_paths
+    #     ], image_name
