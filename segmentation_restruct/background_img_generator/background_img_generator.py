@@ -9,6 +9,8 @@ from scipy.stats import mode
 from tqdm import tqdm
 from typing import List
 from honeybee_comb_inferer.inference import HoneyBeeCombInferer
+from collections import deque
+from typing import Deque
 
 
 class BackgroundImageGenerator:
@@ -37,8 +39,7 @@ class BackgroundImageGenerator:
 
     def _find_images_by_path(self, path: Path) -> list[Path]:
         image_paths = sorted(path.glob("*.[pj][np][ge]*"))
-        assert image_paths, "No images found."
-        return image_paths
+        return image_paths if image_paths else None
 
     def mask_out_bees(self) -> None:
         """
@@ -84,6 +85,62 @@ class BackgroundImageGenerator:
         images, img_name = self._load_grayscale_images(self.masked_img_dir, 10, 0)
         background = self._compute_background_image(images)
         self._save_image(background, self.background_img_dir / img_name)
+
+    def _read_image(self, filepath: Path) -> cv2.typing.MatLike:
+        return cv2.imread(filepath, cv2.IMREAD_GRAYSCALE)
+
+    def process_rolling_backgrounds(self, win_size: int, sampling_rate: int) -> None:
+
+        masked_images = self._find_images_by_path(self.masked_img_dir)
+        background_images = self._find_images_by_path(self.background_img_dir)
+
+        image_queue: Deque[tuple[np.ndarray, Path]] = deque()
+
+        total_bytes = sum(img.nbytes for img, _ in image_queue)
+        print(f"Total memory (images only): {total_bytes / 1024 / 1024:.2f} MB")
+
+        last_processed_img_name = (
+            background_images[-1].name.replace("background", "masked")
+            if background_images
+            else None
+        )
+
+        start_idx = 0
+        if last_processed_img_name:
+            try:
+                last_index = masked_images.index(
+                    self.masked_img_dir / last_processed_img_name
+                )
+                start_idx = last_index + sampling_rate
+            except ValueError:
+                print(f"Could not find masked image {last_processed_img_name}")
+                return
+
+        sampled_masked_paths = masked_images[start_idx::sampling_rate]
+        bg_img_name = sampled_masked_paths[0].name.replace("masked", "background")
+
+        if len(sampled_masked_paths) < win_size:
+            print(
+                f"Not enough images left for winow. Found {len(sampled_masked_paths)}"
+            )
+            return
+        for path in sampled_masked_paths[: win_size - 1]:
+            img = self._read_image(path)
+            image_queue.append((img, path))
+
+        total_bytes = sum(img.nbytes for img, _ in image_queue)
+        print(f"Total memory (images only): {total_bytes / 1024 / 1024:.2f} MB")
+        print(len(image_queue))
+
+        for path in tqdm(sampled_masked_paths[win_size - 1 :]):
+            next_img = self._read_image(path)
+            image_queue.append((next_img, path))
+            if len(image_queue) == win_size:
+                bg_img_name = image_queue[0][1].name.replace("masked", "background")
+                window_imgs = [img for img, _ in image_queue]
+                # background = self._compute_background_image(window_imgs)
+                # self._save_image(background, self.background_img_dir / bg_img_name)
+                image_queue.popleft()
 
     def _load_grayscale_images(
         self,
