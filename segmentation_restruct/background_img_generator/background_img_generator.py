@@ -35,7 +35,6 @@ class BackgroundImageGenerator:
             device=device,
         )
         self.mask_out_bees()
-        # self.create_background_masked_median_mode(use_median=False)
 
     def _find_images_by_path(self, path: Path) -> list[Path]:
         image_paths = sorted(path.glob("*.[pj][np][ge]*"))
@@ -91,9 +90,6 @@ class BackgroundImageGenerator:
 
         image_queue: Deque[tuple[np.ndarray, Path]] = deque()
 
-        total_bytes = sum(img.nbytes for img, _ in image_queue)
-        print(f"Total memory (images only): {total_bytes / 1024 / 1024:.2f} MB")
-
         last_processed_img_name = (
             background_images[-1].name.replace("background", "masked")
             if background_images
@@ -123,34 +119,23 @@ class BackgroundImageGenerator:
             img = self._read_image(path)
             image_queue.append((img, path))
 
-        total_bytes = sum(img.nbytes for img, _ in image_queue)
-        print(f"Total memory (images only): {total_bytes / 1024 / 1024:.2f} MB")
-        print(len(image_queue))
-
         for path in tqdm(sampled_masked_paths[win_size - 1 :]):
             next_img = self._read_image(path)
             image_queue.append((next_img, path))
             if len(image_queue) == win_size:
                 bg_img_name = image_queue[0][1].name.replace("masked", "background")
                 window_imgs = [img for img, _ in image_queue]
-                # background = self._compute_background_image(window_imgs)
-                # self._save_image(background, self.background_img_dir / bg_img_name)
+                background = self._compute_background_image(window_imgs)
+                self._save_image(background, self.background_img_dir / bg_img_name)
                 image_queue.popleft()
 
     def _compute_background_image(self, images: list[np.ndarray]) -> np.ndarray:
         assert images, "No images provided."
         stacked = np.stack(images, axis=0)  # shape: (N, H, W)
 
-        # Valid mask: non-zero pixels
-        valid_mask = stacked != 0
-
-        # Mask invalid pixels with NaN
-        masked_data = np.where(valid_mask, stacked, np.nan)
-        median_image = np.nanmedian(masked_data, axis=0)
-
-        # Replace NaNs with 0 and convert to uint8
-        background = np.nan_to_num(median_image, nan=0).astype(np.uint8)
-        return background
+        masked = np.ma.masked_equal(stacked, 0)
+        median = np.ma.median(masked, axis=0).filled(0).astype(np.uint8)
+        return median
 
     def _save_image(self, image: np.ndarray, output_path: Path) -> None:
         cv2.imwrite(str(output_path), image)
