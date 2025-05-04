@@ -149,9 +149,7 @@ class BackgroundImageGenerator:
         use_median=True,
     ):
 
-        # masked_folder = os.path.join(folder, "masked")
-        # file_list = sorted(glob(os.path.join(masked_folder, "*.[pj][np][ge]*")))
-        file_list = sorted(self.masked_img_dir.glob("*.[pj][np][ge]*"))
+        file_list = self._find_images_by_path(self.masked_img_dir)
         # Filter out any existing background or unneeded files
         file_list = [f for f in file_list if "background" not in f.name.lower()]
         file_list = file_list[::sampling_rate]
@@ -178,7 +176,6 @@ class BackgroundImageGenerator:
         print("Number of median images to produce:", num_medians)
 
         # Create a memmap file to hold the 'median images'
-        # memmap_file = os.path.join(tempfile.gettempdir(), "median_images.dat")
         memmap_file = Path(tempfile.gettempdir()) / "median_images.dat"
 
         median_memmap = np.memmap(
@@ -269,7 +266,6 @@ class BackgroundImageGenerator:
             background[i:i_end, j:j_end] = tile_result
 
         # Display and save
-        # out_path = os.path.join(folder, "background_masked_ignoreblack.png")
         out_path = self.background_img_dir / f"background_{file_name}.png"
         cv2.imwrite(out_path, background)
         print("Masked background (ignoring black) saved to:", out_path)
@@ -283,15 +279,6 @@ class BackgroundImageGenerator:
         if memmap_file.exists():
             memmap_file.unlink()
             print(f"Deleted temporary memmap file {memmap_file}")
-
-        # plt.figure(figsize=(24, 16))
-        # plt.imshow(background, cmap="gray")
-        # if use_median:
-        #     plt.title("Background from masked frames (Median, ignoring black)")
-        # else:
-        #     plt.title("Background from masked frames (Mode, ignoring black)")
-        # plt.axis("off")
-        # plt.show()
 
     # def create_background_image_version_2(self) -> None:
     #     images, img_name = self._load_grayscale_images(self.masked_img_dir, 10, 0)
