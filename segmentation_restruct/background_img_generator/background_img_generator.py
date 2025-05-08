@@ -83,7 +83,9 @@ class BackgroundImageGenerator:
     def _read_image(self, filepath: Path) -> cv2.typing.MatLike:
         return cv2.imread(filepath, cv2.IMREAD_GRAYSCALE)
 
-    def process_rolling_backgrounds(self, win_size: int, sampling_rate: int) -> None:
+    def process_rolling_backgrounds(
+        self, win_size: int, sampling_rate: int, stop_idx: int = 0
+    ) -> None:
 
         masked_images = self._find_images_by_path(self.masked_img_dir)
         background_images = self._find_images_by_path(self.background_img_dir)
@@ -119,7 +121,10 @@ class BackgroundImageGenerator:
             img = self._read_image(path)
             image_queue.append((img, path))
 
-        for path in tqdm(sampled_masked_paths[win_size - 1 :]):
+        paths_to_process = sampled_masked_paths[win_size - 1 :]
+        if stop_idx:
+            paths_to_process = paths_to_process[:stop_idx]
+        for path in tqdm(paths_to_process):
             next_img = self._read_image(path)
             image_queue.append((next_img, path))
             if len(image_queue) == win_size:
