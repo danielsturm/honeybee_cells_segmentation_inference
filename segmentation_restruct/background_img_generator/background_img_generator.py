@@ -1,5 +1,6 @@
 import cv2
 import math
+import matplotlib.pyplot as plt
 import numpy as np
 import tempfile
 
@@ -11,6 +12,10 @@ from typing import List
 from honeybee_comb_inferer.inference import HoneyBeeCombInferer
 from collections import deque
 from typing import Deque
+
+import time
+import torch
+import cupy as cp
 
 
 class BackgroundImageGenerator:
@@ -34,7 +39,7 @@ class BackgroundImageGenerator:
             path_to_pretrained_models=str(weights_path),
             device=device,
         )
-        self.mask_out_bees()
+        # self.mask_out_bees()
 
     def _find_images_by_path(self, path: Path) -> list[Path]:
         image_paths = sorted(path.glob("*.[pj][np][ge]*"))
@@ -59,9 +64,15 @@ class BackgroundImageGenerator:
                 continue
             pred_mask = self.model.infer(img, return_logits=False)
             bee_pixels = (pred_mask == 1) | (pred_mask == 8)
-            img[bee_pixels] = 0
+            # img[bee_pixels] = 0
+            refined_mask = self._refine_mask(bee_pixels)
+            img[refined_mask > 0] = 0
             out_path = self.masked_img_dir / f"masked_{PurePath(source_img_path).name}"
             cv2.imwrite(out_path, img)
+
+    def _refine_mask(self, mask: np.ndarray, kernel_size=(15, 15)) -> np.ndarray:
+        kernel = np.ones(kernel_size, np.uint8)
+        return cv2.dilate(mask.astype(np.uint8), kernel, iterations=1)
 
     def find_unmasked_imgages(self) -> List[Path]:
         source_images = sorted(self.source_path.glob("*.[pj][np][ge]*"))
@@ -84,7 +95,7 @@ class BackgroundImageGenerator:
         return cv2.imread(filepath, cv2.IMREAD_GRAYSCALE)
 
     def process_rolling_backgrounds(
-        self, win_size: int, sampling_rate: int, stop_idx: int = 0
+        self, win_size: int, sampling_rate: int, stop_idx: int = 0, device: str = "cpu"
     ) -> None:
 
         masked_images = self._find_images_by_path(self.masked_img_dir)
@@ -130,7 +141,18 @@ class BackgroundImageGenerator:
             if len(image_queue) == win_size:
                 bg_img_name = image_queue[0][1].name.replace("masked", "background")
                 window_imgs = [img for img, _ in image_queue]
-                background = self._compute_background_image(window_imgs)
+
+                start = time.perf_counter()
+                # background = self._compute_background_image(window_imgs)
+                # background = self._compute_background_image_cuda_support(
+                #     window_imgs, device
+                # )
+                background = self._compute_background_image_cupy(window_imgs)
+                background = self._apply_clahe(background)
+                print(
+                    f"Background computation took {time.perf_counter() - start:.3f} s"
+                )
+
                 self._save_image(background, self.background_img_dir / bg_img_name)
                 image_queue.popleft()
 
@@ -141,6 +163,37 @@ class BackgroundImageGenerator:
         masked = np.ma.masked_equal(stacked, 0)
         median = np.ma.median(masked, axis=0).filled(0).astype(np.uint8)
         return median
+
+    def _compute_background_image_cuda_support(
+        self, images: list[np.ndarray], device: str = "cpu"
+    ) -> np.ndarray:
+        assert images, "No images provided."
+
+        tensors = [
+            torch.from_numpy(img).to(device=device, dtype=torch.float32)
+            for img in images
+        ]
+        stacked = torch.stack(tensors, dim=0)
+
+        mask = stacked != 0
+        stacked[~mask] = float("nan")
+
+        median = torch.nanmedian(stacked, dim=0).values
+
+        return median.nan_to_num(0).byte().cpu().numpy()
+
+    def _compute_background_image_cupy(self, images: list[np.ndarray]) -> np.ndarray:
+        assert images, "No images provided."
+
+        stacked = cp.stack([cp.asarray(img, dtype=cp.uint8) for img in images], axis=0)
+        stacked = stacked.astype(cp.float32)
+        stacked[stacked == 0] = cp.nan
+
+        median = cp.nanmedian(stacked, axis=0)
+
+        result = cp.nan_to_num(median, nan=0).round().clip(0, 255).astype(cp.uint8)
+
+        return cp.asnumpy(result)
 
     def _save_image(self, image: np.ndarray, output_path: Path) -> None:
         cv2.imwrite(str(output_path), image)
@@ -270,6 +323,7 @@ class BackgroundImageGenerator:
         for i, i_end, j, j_end, tile_result in results:
             background[i:i_end, j:j_end] = tile_result
 
+        background = self._apply_clahe(background)
         # Display and save
         out_path = self.background_img_dir / f"background_{file_name}.png"
         cv2.imwrite(out_path, background)
@@ -285,24 +339,45 @@ class BackgroundImageGenerator:
             memmap_file.unlink()
             print(f"Deleted temporary memmap file {memmap_file}")
 
-    # def create_background_image_version_2(self) -> None:
-    #     images, img_name = self._load_grayscale_images(self.masked_img_dir, 10, 0)
-    #     background = self._compute_background_image(images)
-    #     self._save_image(background, self.background_img_dir / img_name)
+    def _apply_clahe(self, img, clipLimit=2.0, tileGridSize=(8, 8)):
 
-    # def _load_grayscale_images(
-    #     self,
-    #     folder: Path,
-    #     window_size: int = 5,
-    #     start_index: int = 0,
-    # ) -> list[np.ndarray]:
-    #     image_paths = self._find_images_by_path(folder)
-    #     selected_paths = image_paths[start_index : start_index + window_size]
-    #     image_name = (
-    #         selected_paths[-1].name.replace("masked", "background", 1)
-    #         if selected_paths
-    #         else None
-    #     )
-    #     return [
-    #         cv2.imread(str(path), cv2.IMREAD_GRAYSCALE) for path in selected_paths
-    #     ], image_name
+        if img.dtype in [np.float32, np.float64]:
+            img = (img * 255).clip(0, 255).astype(np.uint8)
+
+        clahe = cv2.createCLAHE(clipLimit=clipLimit, tileGridSize=tileGridSize)
+        return clahe.apply(img)
+
+    def analyze_image_quality(self, folder_path: Path) -> None:
+        image_files = self._find_images_by_path(folder_path)
+        image_path = image_files[0]
+        img = self._read_image(image_path)
+
+        # Brightness
+        brightness = np.mean(img)
+
+        # Contrast
+        contrast = np.std(img)
+
+        # Sharpness (Laplacian variance)
+        laplacian = cv2.Laplacian(img, cv2.CV_64F)
+        sharpness = laplacian.var()
+
+        # Histogram
+        hist = cv2.calcHist([img], [0], None, [256], [0, 256])
+
+        # Print metrics
+        print(f"Analyzing: {image_path.name}")
+        print(f"  Brightness (mean):  {brightness:.2f}")
+        print(f"  Contrast (std):     {contrast:.2f}")
+        print(f"  Sharpness (LapVar): {sharpness:.2f}")
+
+        # Plot histogram
+        plt.figure(figsize=(10, 4))
+        plt.title(f"Histogram of {image_path.name}")
+        plt.plot(hist, color="gray")
+        plt.xlim([0, 256])
+        plt.xlabel("Pixel Intensity")
+        plt.ylabel("Frequency")
+        plt.grid(True)
+        plt.tight_layout()
+        plt.show()
