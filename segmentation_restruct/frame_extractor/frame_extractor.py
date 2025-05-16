@@ -63,13 +63,21 @@ class FrameExtractor:
             str(video_file_path),
             "-vf",
             f"select='not(mod(n\\,{step}))'",
+            # -vsync is deprecated, use "-fps_mode" instead
             "-vsync",
             "vfr",
             # "-q:v",
             # "2",  # good quality JPEG
             str(tmp_dir / f"frame_%05d.{self.file_format}"),
         ]
-        subprocess.run(cmd, check=True)
+
+        # TODO: implement proper logging to file for errors
+        subprocess.run(
+            cmd,
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
 
         extracted_frames = sorted(tmp_dir.glob(f"frame_*.{self.file_format}"))
         if len(extracted_frames) != frame_count:

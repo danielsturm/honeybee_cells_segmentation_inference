@@ -7,12 +7,21 @@ from frame_extractor import FrameExtractor
 
 
 class VideoWatcher(FileSystemEventHandler):
-    def __init__(self, watch_dir: Path, out_dir: Path, interval_sec=5):
+    def __init__(
+        self,
+        watch_dir: Path,
+        out_dir: Path,
+        file_format: str = "png",
+        interval_sec=5,
+        max_workers=2,
+    ):
         self.watch_dir = watch_dir
+        self.file_format = file_format
         self.frame_extractor = FrameExtractor(
             output_root_dir=out_dir, interval_sec=interval_sec
         )
         self.processing_files = set()
+        self.semaphore = threading.Semaphore(max_workers)
 
     def on_created(self, event: FileSystemEvent) -> None:
         if not isinstance(event, FileCreatedEvent):
@@ -36,26 +45,27 @@ class VideoWatcher(FileSystemEventHandler):
         raise TimeoutError(f"File {path} is not stable.")
 
     def wait_for_and_process_video(self, path: Path) -> None:
-        try:
-            self.wait_until_file_ready(path)
+        with self.semaphore:
+            try:
+                self.wait_until_file_ready(path)
 
-            txt_path = path.with_suffix(".txt")
-            for _ in range(10):
-                if txt_path.exists():
-                    break
-                time.sleep(1)
-            else:
-                print(f"Warning: No .txt file for {path.name}, skipping.")
-                return
+                txt_path = path.with_suffix(".txt")
+                for _ in range(10):
+                    if txt_path.exists():
+                        break
+                    time.sleep(1)
+                else:
+                    print(f"Warning: No .txt file for {path.name}, skipping.")
+                    return
 
-            if self.is_already_processed(path):
-                print(f"Info: Video already processed: {path.name}")
-                return
+                if self.is_already_processed(path):
+                    print(f"Info: Video already processed: {path.name}")
+                    return
 
-            self.processing_files.add(path)
-            self.process_video(path)
-        finally:
-            self.processing_files.discard(path)
+                self.processing_files.add(path)
+                self.process_video(path)
+            finally:
+                self.processing_files.discard(path)
 
     def is_already_processed(self, video_path: Path) -> bool:
         txt_file = video_path.with_suffix(".txt")
@@ -68,7 +78,8 @@ class VideoWatcher(FileSystemEventHandler):
             if not selected_timestamps:
                 return False
             first_frame = (
-                self.frame_extractor.output_dir / f"{selected_timestamps[0]}.jpg"
+                self.frame_extractor.output_dir
+                / f"{selected_timestamps[0]}.{self.file_format}"
             )
             return first_frame.exists()
         except Exception:
@@ -104,6 +115,10 @@ class VideoWatcher(FileSystemEventHandler):
 
 
 if __name__ == "__main__":
-    path = Path(__file__).parent / "playground"
-    watcher = VideoWatcher(watch_dir=path, out_dir=path, interval_sec=2)
+    # path = Path(__file__).parent / "playground"
+    out_dir = Path(r"D:\Bachelorarbeit\bee_videos")
+    in_dir = Path(r"D:\Bachelorarbeit\bee_videos\cam-0")
+    watcher = VideoWatcher(
+        watch_dir=in_dir, out_dir=out_dir, interval_sec=3, max_workers=2
+    )
     watcher.start()
