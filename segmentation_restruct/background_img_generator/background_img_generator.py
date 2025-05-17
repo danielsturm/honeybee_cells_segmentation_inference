@@ -1,4 +1,5 @@
 import cv2
+import gc
 import math
 import matplotlib.pyplot as plt
 import numpy as np
@@ -40,8 +41,10 @@ class BackgroundImageGenerator:
             device=device,
         )
         # self.mask_out_bees()
+        self._memmap_file = Path(tempfile.gettempdir()) / "rolling_medians.dat"
+        self._rolling_memmap = None
 
-    def _find_images_by_path(self, path: Path) -> list[Path]:
+    def _find_images_by_path(self, path: Path) -> list[Path] | None:
         image_paths = sorted(path.glob("*.[pj][np][ge]*"))
         return image_paths if image_paths else None
 
@@ -58,7 +61,7 @@ class BackgroundImageGenerator:
         image_files = self.find_unmasked_imgages()
 
         for source_img_path in tqdm(image_files):
-            img = cv2.imread(source_img_path, cv2.IMREAD_GRAYSCALE)
+            img = cv2.imread(str(source_img_path), cv2.IMREAD_GRAYSCALE)
             if img is None:
                 print(f"Warning: could not read {source_img_path}")
                 continue
@@ -68,7 +71,7 @@ class BackgroundImageGenerator:
             refined_mask = self._refine_mask(bee_pixels)
             img[refined_mask > 0] = 0
             out_path = self.masked_img_dir / f"masked_{PurePath(source_img_path).name}"
-            cv2.imwrite(out_path, img)
+            cv2.imwrite(str(out_path), img)
 
     def _refine_mask(self, mask: np.ndarray, kernel_size=(15, 15)) -> np.ndarray:
         kernel = np.ones(kernel_size, np.uint8)
@@ -92,12 +95,17 @@ class BackgroundImageGenerator:
         return masked_img_dir, background_img_dir
 
     def _read_image(self, filepath: Path) -> cv2.typing.MatLike:
-        return cv2.imread(filepath, cv2.IMREAD_GRAYSCALE)
+        return cv2.imread(str(filepath), cv2.IMREAD_GRAYSCALE)
 
     def process_rolling_backgrounds(
-        self, win_size: int, sampling_rate: int, stop_idx: int = 0, device: str = "cpu"
+        self,
+        win_size: int,
+        sampling_rate: int,
+        device: str = "cpu",
+        tile_size=(512, 512),
+        use_median=True,
+        max_rolling_frames: int | None = None,
     ) -> None:
-
         masked_images = self._find_images_by_path(self.masked_img_dir)
         background_images = self._find_images_by_path(self.background_img_dir)
 
@@ -121,40 +129,113 @@ class BackgroundImageGenerator:
                 return
 
         sampled_masked_paths = masked_images[start_idx::sampling_rate]
-        bg_img_name = sampled_masked_paths[0].name.replace("masked", "background")
 
         if len(sampled_masked_paths) < win_size:
             print(
-                f"Not enough images left for winow. Found {len(sampled_masked_paths)}"
+                f"Not enough images left for window. Found {len(sampled_masked_paths)}"
             )
             return
+
+        if max_rolling_frames:
+            total_possible = len(sampled_masked_paths) - win_size + 1
+            num_medians = min(max_rolling_frames, total_possible)
+            sampled_masked_paths = sampled_masked_paths[: num_medians + win_size - 1]
+        else:
+            num_medians = len(sampled_masked_paths) - win_size + 1
+
+        print(f"Will compute {num_medians} rolling median frames")
+
+        # First image for shape
+        first_img = self._read_image(sampled_masked_paths[0])
+        H, W = first_img.shape
+
+        self._rolling_memmap = np.memmap(
+            self._memmap_file, dtype="uint8", mode="w+", shape=(num_medians, H, W)
+        )
+
         for path in sampled_masked_paths[: win_size - 1]:
             img = self._read_image(path)
             image_queue.append((img, path))
 
+        median_index = 0
         paths_to_process = sampled_masked_paths[win_size - 1 :]
-        if stop_idx:
-            paths_to_process = paths_to_process[:stop_idx]
-        for path in tqdm(paths_to_process):
+
+        for path in tqdm(paths_to_process, desc="Rolling median"):
+            if median_index >= num_medians:
+                break
             next_img = self._read_image(path)
             image_queue.append((next_img, path))
             if len(image_queue) == win_size:
-                bg_img_name = image_queue[0][1].name.replace("masked", "background")
                 window_imgs = [img for img, _ in image_queue]
-
-                start = time.perf_counter()
-                # background = self._compute_background_image(window_imgs)
-                # background = self._compute_background_image_cuda_support(
-                #     window_imgs, device
-                # )
                 background = self._compute_background_image_cupy(window_imgs)
                 background = self._apply_clahe(background)
-                print(
-                    f"Background computation took {time.perf_counter() - start:.3f} s"
-                )
-
-                self._save_image(background, self.background_img_dir / bg_img_name)
+                self._rolling_memmap[median_index, :, :] = background
+                median_index += 1
                 image_queue.popleft()
+
+        self._rolling_memmap.flush()
+        print("Rolling medians written to disk.")
+
+        # === Tile-wise global median ===
+        print("Starting global background computation by tile...")
+
+        del self._rolling_memmap
+        gc.collect()
+
+        self._rolling_memmap = np.memmap(
+            self._memmap_file, dtype="uint8", mode="r", shape=(num_medians, H, W)
+        )
+
+        background = np.zeros((H, W), dtype=np.uint8)
+        n_tiles_y = math.ceil(H / tile_size[0])
+        n_tiles_x = math.ceil(W / tile_size[1])
+
+        def process_tile(i, j):
+            i_end = min(i + tile_size[0], H)
+            j_end = min(j + tile_size[1], W)
+            tile_stack = self._rolling_memmap[:, i:i_end, j:j_end]
+            N, th, tw = tile_stack.shape
+            tile_flat = tile_stack.reshape(N, -1)
+            out_tile = np.zeros((th * tw,), dtype=np.uint8)
+            for k in range(th * tw):
+                pixel_values = tile_flat[:, k]
+                nonzero = pixel_values[pixel_values != 0]
+                if len(nonzero) == 0:
+                    out_tile[k] = 0
+                else:
+                    if use_median:
+                        out_tile[k] = np.median(nonzero).astype(np.uint8)
+                    else:
+                        val, _ = mode(nonzero, keepdims=True)
+                        out_tile[k] = val[0].astype(np.uint8)
+            return i, i_end, j, j_end, out_tile.reshape(th, tw)
+
+        results = Parallel(n_jobs=8)(
+            delayed(process_tile)(i, j)
+            for i in range(0, H, tile_size[0])
+            for j in range(0, W, tile_size[1])
+        )
+
+        for i, i_end, j, j_end, tile_result in results:
+            background[i:i_end, j:j_end] = tile_result
+
+        # background = self._apply_clahe(background)
+
+        bg_img_name = sampled_masked_paths[0].name.replace("masked", "background")
+        self._save_image(background, self.background_img_dir / bg_img_name)
+        print("Final background saved to:", self.background_img_dir / bg_img_name)
+
+        self._cleanup_memory()
+
+    def _cleanup_memory(self):
+        del self._rolling_memmap
+        gc.collect()
+        if self._memmap_file.exists():
+            try:
+                self._memmap_file.unlink()
+                print(f"Deleted temporary memmap file {self._memmap_file}")
+            except PermissionError as e:
+                print(f"Could not delete memmap file: {e}")
 
     def _compute_background_image(self, images: list[np.ndarray]) -> np.ndarray:
         assert images, "No images provided."
@@ -208,6 +289,9 @@ class BackgroundImageGenerator:
     ):
 
         file_list = self._find_images_by_path(self.masked_img_dir)
+        if not file_list:
+            print("no files found")
+            return
         # Filter out any existing background or unneeded files
         file_list = [f for f in file_list if "background" not in f.name.lower()]
         file_list = file_list[::sampling_rate]
@@ -326,11 +410,10 @@ class BackgroundImageGenerator:
         background = self._apply_clahe(background)
         # Display and save
         out_path = self.background_img_dir / f"background_{file_name}.png"
-        cv2.imwrite(out_path, background)
+        cv2.imwrite(str(out_path), background)
         print("Masked background (ignoring black) saved to:", out_path)
 
         del median_memmap
-        import gc
 
         gc.collect()
 
@@ -349,6 +432,9 @@ class BackgroundImageGenerator:
 
     def analyze_image_quality(self, folder_path: Path) -> None:
         image_files = self._find_images_by_path(folder_path)
+        if not image_files:
+            print("no files found")
+            return
         image_path = image_files[0]
         img = self._read_image(image_path)
 
@@ -381,3 +467,62 @@ class BackgroundImageGenerator:
         plt.grid(True)
         plt.tight_layout()
         plt.show()
+
+
+def process_rolling_backgrounds_old(
+    self, win_size: int, sampling_rate: int, stop_idx: int = 0, device: str = "cpu"
+) -> None:
+
+    masked_images = self._find_images_by_path(self.masked_img_dir)
+    background_images = self._find_images_by_path(self.background_img_dir)
+
+    image_queue: Deque[tuple[np.ndarray, Path]] = deque()
+
+    last_processed_img_name = (
+        background_images[-1].name.replace("background", "masked")
+        if background_images
+        else None
+    )
+
+    start_idx = 0
+    if last_processed_img_name:
+        try:
+            last_index = masked_images.index(
+                self.masked_img_dir / last_processed_img_name
+            )
+            start_idx = last_index + sampling_rate
+        except ValueError:
+            print(f"Could not find masked image {last_processed_img_name}")
+            return
+
+    sampled_masked_paths = masked_images[start_idx::sampling_rate]
+    bg_img_name = sampled_masked_paths[0].name.replace("masked", "background")
+
+    if len(sampled_masked_paths) < win_size:
+        print(f"Not enough images left for winow. Found {len(sampled_masked_paths)}")
+        return
+    for path in sampled_masked_paths[: win_size - 1]:
+        img = self._read_image(path)
+        image_queue.append((img, path))
+
+    paths_to_process = sampled_masked_paths[win_size - 1 :]
+    if stop_idx:
+        paths_to_process = paths_to_process[:stop_idx]
+    for path in tqdm(paths_to_process):
+        next_img = self._read_image(path)
+        image_queue.append((next_img, path))
+        if len(image_queue) == win_size:
+            bg_img_name = image_queue[0][1].name.replace("masked", "background")
+            window_imgs = [img for img, _ in image_queue]
+
+            start = time.perf_counter()
+            # background = self._compute_background_image(window_imgs)
+            # background = self._compute_background_image_cuda_support(
+            #     window_imgs, device
+            # )
+            background = self._compute_background_image_cupy(window_imgs)
+            background = self._apply_clahe(background)
+            print(f"Background computation took {time.perf_counter() - start:.3f} s")
+
+            self._save_image(background, self.background_img_dir / bg_img_name)
+            image_queue.popleft()
