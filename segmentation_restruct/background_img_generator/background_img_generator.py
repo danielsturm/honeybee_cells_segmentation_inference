@@ -13,6 +13,7 @@ from typing import List
 from honeybee_comb_inferer.inference import HoneyBeeCombInferer
 from collections import deque
 from typing import Deque
+from segmentation_restruct.utils import timed, BgImageGenConfig
 
 import time
 import torch
@@ -20,7 +21,8 @@ import cupy as cp
 
 
 class BackgroundImageGenerator:
-    def __init__(self, source_path: Path, output_path: Path):
+    def __init__(self, source_path: Path, output_path: Path, config: BgImageGenConfig):
+        self._config = config
         if not source_path.is_dir():
             raise NotADirectoryError(
                 f"provided source path {source_path} is not a directory"
@@ -33,20 +35,17 @@ class BackgroundImageGenerator:
         self.output_path = output_path
         self.masked_img_dir, self.background_img_dir = self.create_output_dir()
         weights_path: Path = Path(__file__).parents[2] / "models"
-        device = "cuda"  # TODO: move to config pydantic model
-        model_name = "unet_effnetb0"  # TODO: move to config pydantic model (maybe)
         self.model = HoneyBeeCombInferer(
-            model_name=model_name,
+            model_name=self._config.segmentation_model,
             path_to_pretrained_models=str(weights_path),
-            device=device,
+            device=self._config.device,
         )
         # self.mask_out_bees()
         self._memmap_file = Path(tempfile.gettempdir()) / "rolling_medians.dat"
         self._rolling_memmap = None
 
-    def _find_images_by_path(self, path: Path) -> list[Path] | None:
-        image_paths = sorted(path.glob("*.[pj][np][ge]*"))
-        return image_paths if image_paths else None
+    def _find_images_by_path(self, path: Path) -> list[Path]:
+        return sorted(path.glob("*.[pj][np][ge]*"))
 
     def mask_out_bees(self) -> None:
         """
@@ -73,9 +72,13 @@ class BackgroundImageGenerator:
             out_path = self.masked_img_dir / f"masked_{PurePath(source_img_path).name}"
             cv2.imwrite(str(out_path), img)
 
-    def _refine_mask(self, mask: np.ndarray, kernel_size=(15, 15)) -> np.ndarray:
-        kernel = np.ones(kernel_size, np.uint8)
-        return cv2.dilate(mask.astype(np.uint8), kernel, iterations=1)
+    def _refine_mask(self, mask: np.ndarray) -> np.ndarray:
+        if not self._config.mask_dilation:
+            return mask
+        else:
+            kernel_size = (self._config.mask_dilation, self._config.mask_dilation)
+            kernel = np.ones(kernel_size, np.uint8)
+            return cv2.dilate(mask.astype(np.uint8), kernel, iterations=1)
 
     def find_unmasked_imgages(self) -> List[Path]:
         source_images = sorted(self.source_path.glob("*.[pj][np][ge]*"))
@@ -97,17 +100,21 @@ class BackgroundImageGenerator:
     def _read_image(self, filepath: Path) -> cv2.typing.MatLike:
         return cv2.imread(str(filepath), cv2.IMREAD_GRAYSCALE)
 
+    @timed("Rolling Background Generation")
     def process_rolling_backgrounds(
         self,
-        win_size: int,
         sampling_rate: int,
-        device: str = "cpu",
         tile_size=(512, 512),
         use_median=True,
-        max_rolling_frames: int | None = None,
     ) -> None:
         masked_images = self._find_images_by_path(self.masked_img_dir)
+        if not masked_images:
+            print("No masked images found")
+            return
         background_images = self._find_images_by_path(self.background_img_dir)
+        if not background_images:
+            print("No background images found")
+            return
 
         image_queue: Deque[tuple[np.ndarray, Path]] = deque()
 
@@ -130,45 +137,57 @@ class BackgroundImageGenerator:
 
         sampled_masked_paths = masked_images[start_idx::sampling_rate]
 
-        if len(sampled_masked_paths) < win_size:
+        if len(sampled_masked_paths) < self._config.window_size:
             print(
                 f"Not enough images left for window. Found {len(sampled_masked_paths)}"
             )
             return
 
-        if max_rolling_frames:
-            total_possible = len(sampled_masked_paths) - win_size + 1
-            num_medians = min(max_rolling_frames, total_possible)
-            sampled_masked_paths = sampled_masked_paths[: num_medians + win_size - 1]
+        if self._config.num_median_images:
+            total_possible = len(sampled_masked_paths) - self._config.window_size + 1
+            num_medians = min(self._config.num_median_images, total_possible)
+            sampled_masked_paths = sampled_masked_paths[
+                : num_medians + self._config.window_size - 1
+            ]
         else:
-            num_medians = len(sampled_masked_paths) - win_size + 1
+            num_medians = len(sampled_masked_paths) - self._config.window_size + 1
 
         print(f"Will compute {num_medians} rolling median frames")
 
         # First image for shape
         first_img = self._read_image(sampled_masked_paths[0])
         H, W = first_img.shape
+        assert H > 0 and W > 0, f"Invalid shape: H={H}, W={W}"
 
         self._rolling_memmap = np.memmap(
             self._memmap_file, dtype="uint8", mode="w+", shape=(num_medians, H, W)
         )
 
-        for path in sampled_masked_paths[: win_size - 1]:
+        for path in sampled_masked_paths[: self._config.window_size - 1]:
             img = self._read_image(path)
             image_queue.append((img, path))
 
         median_index = 0
-        paths_to_process = sampled_masked_paths[win_size - 1 :]
+        paths_to_process = sampled_masked_paths[self._config.window_size - 1 :]
 
         for path in tqdm(paths_to_process, desc="Rolling median"):
             if median_index >= num_medians:
                 break
             next_img = self._read_image(path)
             image_queue.append((next_img, path))
-            if len(image_queue) == win_size:
+            if len(image_queue) == self._config.window_size:
                 window_imgs = [img for img, _ in image_queue]
-                background = self._compute_background_image_cupy(window_imgs)
-                background = self._apply_clahe(background)
+                match self._config.median_computation:
+                    case "cuda_support":
+                        background = self._compute_background_image_cuda_support(
+                            window_imgs, self._config.device
+                        )
+                    case "cupy":
+                        background = self._compute_background_image_cupy(window_imgs)
+                    case "masked_array":
+                        background = self._compute_background_image(window_imgs)
+                if self._config.apply_clahe == "intermediate":
+                    background = self._apply_clahe(background)
                 self._rolling_memmap[median_index, :, :] = background
                 median_index += 1
                 image_queue.popleft()
@@ -187,31 +206,10 @@ class BackgroundImageGenerator:
         )
 
         background = np.zeros((H, W), dtype=np.uint8)
-        n_tiles_y = math.ceil(H / tile_size[0])
-        n_tiles_x = math.ceil(W / tile_size[1])
-
-        def process_tile(i, j):
-            i_end = min(i + tile_size[0], H)
-            j_end = min(j + tile_size[1], W)
-            tile_stack = self._rolling_memmap[:, i:i_end, j:j_end]
-            N, th, tw = tile_stack.shape
-            tile_flat = tile_stack.reshape(N, -1)
-            out_tile = np.zeros((th * tw,), dtype=np.uint8)
-            for k in range(th * tw):
-                pixel_values = tile_flat[:, k]
-                nonzero = pixel_values[pixel_values != 0]
-                if len(nonzero) == 0:
-                    out_tile[k] = 0
-                else:
-                    if use_median:
-                        out_tile[k] = np.median(nonzero).astype(np.uint8)
-                    else:
-                        val, _ = mode(nonzero, keepdims=True)
-                        out_tile[k] = val[0].astype(np.uint8)
-            return i, i_end, j, j_end, out_tile.reshape(th, tw)
-
         results = Parallel(n_jobs=8)(
-            delayed(process_tile)(i, j)
+            delayed(self._process_tile_stack)(
+                self._rolling_memmap, i, j, tile_size, use_median
+            )
             for i in range(0, H, tile_size[0])
             for j in range(0, W, tile_size[1])
         )
@@ -219,13 +217,46 @@ class BackgroundImageGenerator:
         for i, i_end, j, j_end, tile_result in results:
             background[i:i_end, j:j_end] = tile_result
 
-        # background = self._apply_clahe(background)
+        if self._config.apply_clahe == "post":
+            background = self._apply_clahe(background)
 
         bg_img_name = sampled_masked_paths[0].name.replace("masked", "background")
         self._save_image(background, self.background_img_dir / bg_img_name)
         print("Final background saved to:", self.background_img_dir / bg_img_name)
 
         self._cleanup_memory()
+
+    # @timed("Tile Processing")
+    def _process_tile_stack(
+        self,
+        stack: np.memmap,
+        i: int,
+        j: int,
+        tile_size: tuple[int, int],
+        use_median: bool,
+    ) -> tuple[int, int, int, int, np.ndarray]:
+        H, W = stack.shape[1:]  # (N, H, W)
+        i_end = min(i + tile_size[0], H)
+        j_end = min(j + tile_size[1], W)
+
+        tile_stack = stack[:, i:i_end, j:j_end]
+        N, th, tw = tile_stack.shape
+        tile_flat = tile_stack.reshape(N, -1)
+        out_tile = np.zeros((th * tw,), dtype=np.uint8)
+
+        for k in range(th * tw):
+            pixel_values = tile_flat[:, k]
+            nonzero = pixel_values[pixel_values != 0]
+            if len(nonzero) == 0:
+                out_tile[k] = 0
+            else:
+                if use_median:
+                    out_tile[k] = np.median(nonzero).astype(np.uint8)
+                else:
+                    val, _ = mode(nonzero, keepdims=True)
+                    out_tile[k] = val[0].astype(np.uint8)
+
+        return i, i_end, j, j_end, out_tile.reshape(th, tw)
 
     def _cleanup_memory(self):
         del self._rolling_memmap
@@ -275,6 +306,14 @@ class BackgroundImageGenerator:
         result = cp.nan_to_num(median, nan=0).round().clip(0, 255).astype(cp.uint8)
 
         return cp.asnumpy(result)
+
+    def _apply_clahe(self, img, clipLimit=2.0, tileGridSize=(8, 8)):
+
+        if img.dtype in [np.float32, np.float64]:
+            img = (img * 255).clip(0, 255).astype(np.uint8)
+
+        clahe = cv2.createCLAHE(clipLimit=clipLimit, tileGridSize=tileGridSize)
+        return clahe.apply(img)
 
     def _save_image(self, image: np.ndarray, output_path: Path) -> None:
         cv2.imwrite(str(output_path), image)
@@ -421,14 +460,6 @@ class BackgroundImageGenerator:
         if memmap_file.exists():
             memmap_file.unlink()
             print(f"Deleted temporary memmap file {memmap_file}")
-
-    def _apply_clahe(self, img, clipLimit=2.0, tileGridSize=(8, 8)):
-
-        if img.dtype in [np.float32, np.float64]:
-            img = (img * 255).clip(0, 255).astype(np.uint8)
-
-        clahe = cv2.createCLAHE(clipLimit=clipLimit, tileGridSize=tileGridSize)
-        return clahe.apply(img)
 
     def analyze_image_quality(self, folder_path: Path) -> None:
         image_files = self._find_images_by_path(folder_path)
