@@ -138,3 +138,7 @@ dmypy.json
 # Pyre type checker
 .pyre/
 .DS_Store
+
+# custom
+ffmpeg.exe
+cells.json

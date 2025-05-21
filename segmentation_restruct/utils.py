@@ -24,8 +24,8 @@ class BgImageGenConfig(BaseModel):
     window_size: int = 10
     num_median_images: int | None = 48
     apply_clahe: Literal["intermediate", "post"] = "post"
-    mask_dilation: Literal[0, 9, 25] = 0
-    frame_interval_in_sec: int = 3
+    mask_dilation: Literal[0, 9, 15, 25] = 0
+    # frame_interval_in_sec: int = 3
     median_computation: Literal["cupy", "cuda_support", "masked_array"] = "cupy"
     segmentation_model: Literal["unet_effnetb0"] = "unet_effnetb0"
     device: Literal["cuda", "cpu"] = "cuda"
