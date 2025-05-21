@@ -9,7 +9,7 @@ from joblib import Parallel, delayed
 from pathlib import Path, PurePath
 from scipy.stats import mode
 from tqdm import tqdm
-from typing import List
+from typing import List, Literal
 from honeybee_comb_inferer.inference import HoneyBeeCombInferer
 from collections import deque
 from typing import Deque
@@ -18,6 +18,7 @@ from segmentation_restruct.utils import timed, BgImageGenConfig
 import time
 import torch
 import cupy as cp
+import re
 
 
 class BackgroundImageGenerator:
@@ -44,8 +45,22 @@ class BackgroundImageGenerator:
         self._memmap_file = Path(tempfile.gettempdir()) / "rolling_medians.dat"
         self._rolling_memmap = None
 
-    def _find_images_by_path(self, path: Path) -> list[Path]:
-        return sorted(path.glob("*.[pj][np][ge]*"))
+    # def _find_images_by_path(self, path: Path) -> list[Path]:
+    #     return sorted(path.glob("*.[pj][np][ge]*"))
+    def _find_images_by_path(
+        self,
+        path: Path,
+        role: Literal["background", "masked"],
+    ) -> list[Path]:
+        # pattern_template = r"^{prefix}_(\d{{8}}T\d{{6}}\.\d{{6}}\.\d{{3}}Z)\.png$"
+        # pattern_template = r"^{prefix}_(\d{{8}}T\d{{6}}\.\d{{1,6}}\.\d{{3}}Z)\.png$"
+        pattern_template = (
+            r"^{prefix}_cam-\d_(\d{{8}}T\d{{6}}\.\d{{1,6}}\.\d{{3}}Z)\.png$"
+        )
+        regex = re.compile(pattern_template.format(prefix=role))
+
+        all_images = sorted(path.glob("*"))
+        return [img for img in all_images if regex.match(img.name)]
 
     def mask_out_bees(self) -> None:
         """
@@ -107,14 +122,14 @@ class BackgroundImageGenerator:
         tile_size=(512, 512),
         use_median=True,
     ) -> None:
-        masked_images = self._find_images_by_path(self.masked_img_dir)
+        masked_images = self._find_images_by_path(self.masked_img_dir, role="masked")
+        print(self.masked_img_dir)
         if not masked_images:
             print("No masked images found")
             return
-        background_images = self._find_images_by_path(self.background_img_dir)
-        if not background_images:
-            print("No background images found")
-            return
+        background_images = self._find_images_by_path(
+            self.background_img_dir, role="background"
+        )
 
         image_queue: Deque[tuple[np.ndarray, Path]] = deque()
 
@@ -220,11 +235,18 @@ class BackgroundImageGenerator:
         if self._config.apply_clahe == "post":
             background = self._apply_clahe(background)
 
-        bg_img_name = sampled_masked_paths[0].name.replace("masked", "background")
+        # bg_img_name = sampled_masked_paths[0].name.replace("masked", "background")
+        original_path = sampled_masked_paths[0]
+        bg_img_name = f"{self._tmp_config_name_gen()}{original_path.suffix}"
         self._save_image(background, self.background_img_dir / bg_img_name)
         print("Final background saved to:", self.background_img_dir / bg_img_name)
 
         self._cleanup_memory()
+
+    def _tmp_config_name_gen(self):
+        config = self._config
+        name = f"ws={config.window_size}_numimg={config.num_median_images}_clahe={config.apply_clahe}_dil={config.mask_dilation}_mdncomp={config.median_computation}"
+        return name
 
     # @timed("Tile Processing")
     def _process_tile_stack(
@@ -327,7 +349,7 @@ class BackgroundImageGenerator:
         use_median=True,
     ):
 
-        file_list = self._find_images_by_path(self.masked_img_dir)
+        file_list = self._find_images_by_path(self.masked_img_dir, role="masked")
         if not file_list:
             print("no files found")
             return
@@ -462,7 +484,7 @@ class BackgroundImageGenerator:
             print(f"Deleted temporary memmap file {memmap_file}")
 
     def analyze_image_quality(self, folder_path: Path) -> None:
-        image_files = self._find_images_by_path(folder_path)
+        image_files = self._find_images_by_path(folder_path, role="background")
         if not image_files:
             print("no files found")
             return
@@ -499,61 +521,66 @@ class BackgroundImageGenerator:
         plt.tight_layout()
         plt.show()
 
+    def process_rolling_backgrounds_old(
+        self, win_size: int, sampling_rate: int, stop_idx: int = 0, device: str = "cpu"
+    ) -> None:
 
-def process_rolling_backgrounds_old(
-    self, win_size: int, sampling_rate: int, stop_idx: int = 0, device: str = "cpu"
-) -> None:
+        masked_images = self._find_images_by_path(self.masked_img_dir, role="masked")
+        background_images = self._find_images_by_path(
+            self.background_img_dir, role="background"
+        )
 
-    masked_images = self._find_images_by_path(self.masked_img_dir)
-    background_images = self._find_images_by_path(self.background_img_dir)
+        image_queue: Deque[tuple[np.ndarray, Path]] = deque()
 
-    image_queue: Deque[tuple[np.ndarray, Path]] = deque()
+        last_processed_img_name = (
+            background_images[-1].name.replace("background", "masked")
+            if background_images
+            else None
+        )
 
-    last_processed_img_name = (
-        background_images[-1].name.replace("background", "masked")
-        if background_images
-        else None
-    )
+        start_idx = 0
+        if last_processed_img_name:
+            try:
+                last_index = masked_images.index(
+                    self.masked_img_dir / last_processed_img_name
+                )
+                start_idx = last_index + sampling_rate
+            except ValueError:
+                print(f"Could not find masked image {last_processed_img_name}")
+                return
 
-    start_idx = 0
-    if last_processed_img_name:
-        try:
-            last_index = masked_images.index(
-                self.masked_img_dir / last_processed_img_name
+        sampled_masked_paths = masked_images[start_idx::sampling_rate]
+        bg_img_name = sampled_masked_paths[0].name.replace("masked", "background")
+
+        if len(sampled_masked_paths) < win_size:
+            print(
+                f"Not enough images left for winow. Found {len(sampled_masked_paths)}"
             )
-            start_idx = last_index + sampling_rate
-        except ValueError:
-            print(f"Could not find masked image {last_processed_img_name}")
             return
+        for path in sampled_masked_paths[: win_size - 1]:
+            img = self._read_image(path)
+            image_queue.append((img, path))
 
-    sampled_masked_paths = masked_images[start_idx::sampling_rate]
-    bg_img_name = sampled_masked_paths[0].name.replace("masked", "background")
+        paths_to_process = sampled_masked_paths[win_size - 1 :]
+        if stop_idx:
+            paths_to_process = paths_to_process[:stop_idx]
+        for path in tqdm(paths_to_process):
+            next_img = self._read_image(path)
+            image_queue.append((next_img, path))
+            if len(image_queue) == win_size:
+                bg_img_name = image_queue[0][1].name.replace("masked", "background")
+                window_imgs = [img for img, _ in image_queue]
 
-    if len(sampled_masked_paths) < win_size:
-        print(f"Not enough images left for winow. Found {len(sampled_masked_paths)}")
-        return
-    for path in sampled_masked_paths[: win_size - 1]:
-        img = self._read_image(path)
-        image_queue.append((img, path))
+                start = time.perf_counter()
+                # background = self._compute_background_image(window_imgs)
+                # background = self._compute_background_image_cuda_support(
+                #     window_imgs, device
+                # )
+                background = self._compute_background_image_cupy(window_imgs)
+                background = self._apply_clahe(background)
+                print(
+                    f"Background computation took {time.perf_counter() - start:.3f} s"
+                )
 
-    paths_to_process = sampled_masked_paths[win_size - 1 :]
-    if stop_idx:
-        paths_to_process = paths_to_process[:stop_idx]
-    for path in tqdm(paths_to_process):
-        next_img = self._read_image(path)
-        image_queue.append((next_img, path))
-        if len(image_queue) == win_size:
-            bg_img_name = image_queue[0][1].name.replace("masked", "background")
-            window_imgs = [img for img, _ in image_queue]
-
-            start = time.perf_counter()
-            # background = self._compute_background_image(window_imgs)
-            # background = self._compute_background_image_cuda_support(
-            #     window_imgs, device
-            # )
-            background = self._compute_background_image_cupy(window_imgs)
-            background = self._apply_clahe(background)
-            print(f"Background computation took {time.perf_counter() - start:.3f} s")
-
-            self._save_image(background, self.background_img_dir / bg_img_name)
-            image_queue.popleft()
+                self._save_image(background, self.background_img_dir / bg_img_name)
+                image_queue.popleft()
