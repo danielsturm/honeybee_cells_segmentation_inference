@@ -5,6 +5,13 @@ import os
 from pathlib import Path
 import json
 
+"""TODO: - check defers thesis. maybe histogram equilization for templates
+- what about a simple segmenation model to reduce it to the inside of the
+frame?
+- cuda support or mulitthreading to speed up?
+- combine with circular hough transform
+- augmentation to have different sizes for the templates"""
+
 
 def load_image_and_prepare(path: Path):
     gray = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
@@ -123,6 +130,9 @@ image_path_1 = Path(
 )
 image_path_2 = Path(
     r"C:\Users\sturmd\Desktop\Bachelorarbeit\ws=10_numimg=100_clahe=intermediate_dil=15_mdncomp=cupy_dur=233.png"
+)
+image_path_3 = Path(
+    r"D:\Bachelorarbeit\bee_videos\extracted_frames_ival_30sec\background_output\background\ws=10_numimg=220_clahe=intermediate_dil=0_mdncomp=cupy_dur=381.png"
 )
 
 save_dir = Path(__file__).parent / "cells.json"
