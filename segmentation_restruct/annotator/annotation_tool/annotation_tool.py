@@ -1,11 +1,19 @@
 import napari
-from skimage.draw import disk
+from napari.layers import Points
 from skimage.io import imread
 import json
 from pathlib import Path
 import numpy as np
 import pandas as pd
 from magicgui.widgets import ComboBox, Container
+
+
+def update_point_borders(points_layer: Points) -> None:
+    selected = points_layer.selected_data
+    border_colors = [
+        "white" if i in selected else "black" for i in range(len(points_layer.data))
+    ]
+    points_layer.border_color = border_colors
 
 
 def export_annotated_cells(points_layer, output_path: Path):
@@ -100,6 +108,48 @@ def start_napari_annotation(image_path: Path, json_in_path: Path, json_out_path:
         name="Cells",
     )
     points_layer.face_color_mode = "cycle"
+    points_layer.selected_data.events.items_changed.connect(
+        lambda e: update_point_borders(points_layer)
+    )
+
+    brush_mask = viewer.add_labels(
+        np.zeros(image.shape[:2], dtype=np.uint8), name="BrushMask"
+    )
+
+    # @viewer.bind_key("s")
+    # def select_points_in_brush(viewer=None):
+    #     mask_array = brush_mask.data
+    #     selected = set()
+    #     for i, (y, x) in enumerate(points_layer.data):
+    #         if 0 <= int(y) < mask_array.shape[0] and 0 <= int(x) < mask_array.shape[1]:
+    #             if mask_array[int(y), int(x)] == 1:
+    #                 selected.add(i)
+    #     points_layer.selected_data = selected
+    #     print(f"Selected {len(selected)} points under brush.")
+
+    def on_brush_mask_change(event):
+        if brush_mask.mode == "paint":
+            mask_array = brush_mask.data
+            selected = set()
+            for i, (y, x) in enumerate(points_layer.data):
+                if (
+                    0 <= int(y) < mask_array.shape[0]
+                    and 0 <= int(x) < mask_array.shape[1]
+                ):
+                    if mask_array[int(y), int(x)] == 1:
+                        selected.add(i)
+
+            # print(points_layer.mode)
+            points_layer.selected_data = selected
+
+            update_point_borders(points_layer)
+
+            # === Prevent infinite recursion ===
+            brush_mask.events.paint.disconnect(on_brush_mask_change)
+            brush_mask.data = np.zeros_like(brush_mask.data)
+            brush_mask.events.paint.connect(on_brush_mask_change)
+
+    brush_mask.events.paint.connect(on_brush_mask_change)
 
     label_widget = create_label_menu(points_layer, label_categories)
     viewer.window.add_dock_widget(label_widget, area="right")
