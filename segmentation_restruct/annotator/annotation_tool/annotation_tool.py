@@ -77,14 +77,17 @@ class HoneyCombAnnotator:
         self.viewer.add_image(image, name="Honeycomb")
 
         features = pd.DataFrame(
-            {"cell_type": pd.Categorical(labels, categories=self.label_categories)}
+            {
+                "cell_type": pd.Categorical(labels, categories=self.label_categories),
+                "radius": radii,
+            }
         )
         points_layer = self.viewer.add_points(
             points,
             features=features,
             face_color="cell_type",
             face_color_cycle=self.color_map,
-            size=radii,
+            size=features["radius"].values,
             name="Cells",
         )
         points_layer.face_color_mode = "cycle"
@@ -168,7 +171,7 @@ class HoneyCombAnnotator:
             self.brush_layer.data = np.zeros_like(self.brush_layer.data)
             self.brush_layer.events.paint.connect(self._on_brush_mask_change)
 
-    def _on_scroll_change_point_size(self, layer, event):
+    def _on_scroll_change_point_size(self, _, event):
         # print(type(event))
         # print(event.type)
         # print(event.delta)
@@ -181,19 +184,19 @@ class HoneyCombAnnotator:
             return
 
         delta = 1 if event.delta[0] > 0 else -1
-        selected = list(layer.selected_data)
+        selected = list(self.points_layer.selected_data)
         if not selected:
             return
 
-        sizes = np.array(layer.size)
         for i in selected:
-            new_size = sizes[i] + delta * 2
-            sizes[i] = max(1, sizes[i] + delta * 2)
-            sizes[i] = min(self.point_max_rad, max(self.point_min_rad, new_size))
+            current_radius = self.points_layer.features.at[i, "radius"]
+            new_radius = current_radius + delta * 2
+            new_radius = min(self.point_max_rad, max(self.point_min_rad, new_radius))
+            self.points_layer.features.at[i, "radius"] = new_radius
 
-        layer.size = sizes
+        self.points_layer.size = self.points_layer.features["radius"].values
 
-        layer.selected_data = set(selected)
+        self.points_layer.selected_data = set(selected)
 
     def _create_label_menu(self):
         label_menu = ComboBox(label="cell_type", choices=self.label_categories)
