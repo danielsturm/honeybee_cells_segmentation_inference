@@ -5,15 +5,16 @@ import json
 from pathlib import Path
 import numpy as np
 import pandas as pd
-from magicgui.widgets import ComboBox, Container
+from magicgui.widgets import ComboBox, Container, PushButton
 
 
 """
 TODO:   - ✅ point size according to actual cell size
         - multiple images at once. how to load. switch between and save
-        - key shortcuts (switch between layers, activate tools, opacity of points)
+        - key shortcuts (switch between layers, activate tools, opacity of points, next/prev image)
         - stop the user from using other tools. how to disable them?
         - ✅ increase size by scrolling (maybe alt + scrolling)
+        - position the drop down and the buttons correctly
         - typing
         - totally custom layer to avoid points and labels layer
         - add point by hitting alt + doubleclick (probably not. can just go into add mode of point layer)
@@ -226,6 +227,24 @@ class HoneyCombAnnotator:
         if new_label != label_menu.value:
             label_menu.value = new_label
 
+    def _on_points_data_change(self, event):
+        max_idx = len(self.points_layer.data) - 1
+        self.points_layer.selected_data = {
+            i for i in self.points_layer.selected_data if i <= max_idx
+        }
+
+    def _create_navigation_buttons(self):
+        prev_button = PushButton(label="← Previous")
+        next_button = PushButton(label="Next →")
+
+        prev_button.clicked.connect()
+        next_button.clicked.connect()
+
+        button_container = Container(
+            widgets=[prev_button, next_button], layout="horizontal"
+        )
+        return button_container
+
     def run(self) -> None:
         self.points_layer.selected_data.events.items_changed.connect(
             lambda e: self._update_point_borders()
@@ -236,7 +255,16 @@ class HoneyCombAnnotator:
         self.brush_layer.events.paint.connect(self._on_brush_mask_change)
 
         label_widget = self._create_label_menu()
-        self.viewer.window.add_dock_widget(label_widget, area="right")
+        self.viewer.window.add_dock_widget(label_widget, area="left")
+
+        nav_buttons = self._create_navigation_buttons()
+        self.viewer.window.add_dock_widget(nav_buttons, area="left")
+
+        """maybe this need to be used when the error
+        IndexError: index 3478 is out of bounds for axis 0 with size 3478
+        appears again"""
+        # self.points_layer.events.data.connect(self._on_points_data_change)
+
         self.test()
 
         napari.run()
