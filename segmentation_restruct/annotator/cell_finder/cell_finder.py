@@ -82,7 +82,7 @@ def non_max_suppression(matches, overlap_thresh=0.3):
     return [matches[i] for i in keep]
 
 
-def save_cells_to_json(results, output_path: Path):
+def save_cells_to_json(results, file_path: Path, output_dir: Path | None):
     cell_data = [
         {
             "center_x": int(x),
@@ -92,7 +92,9 @@ def save_cells_to_json(results, output_path: Path):
         }
         for x, y, r, s in results
     ]
-    with open(output_path, "w") as f:
+    output_dir = output_dir if output_dir else file_path.parent
+    file_name = f"{file_path.stem}_labels.json"
+    with open(output_dir / file_name, "w") as f:
         json.dump(cell_data, f, indent=2)
 
 
@@ -102,27 +104,27 @@ def draw_detected_cells(image_color, results):
     return image_color
 
 
-def execute_cell_finder(path: Path, save_path: Path):
+def execute_cell_finder(img_path: Path, save_path: Path | None = None):
     threshold = 0.725
     scale_factor = 0.425
 
     template_folder = Path(r"C:\Users\sturmd\Desktop\Bachelorarbeit\pattern_matching")
-    assert path.is_file(), "is no file"
+    assert img_path.is_file(), "is no file"
     assert template_folder.is_dir(), "is no dir"
 
-    gray_image, image_color = load_image_and_prepare(path)
+    gray_image, image_color = load_image_and_prepare(img_path)
     match_results = collect_template_matches(
         gray_image, threshold, scale_factor, template_folder
     )
     filtered_results = non_max_suppression(match_results)
-    save_cells_to_json(filtered_results, save_path)
-    image_with_circles = draw_detected_cells(image_color, filtered_results)
+    save_cells_to_json(filtered_results, img_path, save_path)
+    # image_with_circles = draw_detected_cells(image_color, filtered_results)
 
-    plt.figure(figsize=(15, 15))
-    plt.imshow(image_with_circles)
-    plt.title(f"Matches after NMS: {len(filtered_results)}")
-    plt.axis("off")
-    plt.show()
+    # plt.figure(figsize=(15, 15))
+    # plt.imshow(image_with_circles)
+    # plt.title(f"Matches after NMS: {len(filtered_results)}")
+    # plt.axis("off")
+    # plt.show()
 
 
 image_path_1 = Path(
@@ -137,4 +139,24 @@ image_path_3 = Path(
 
 save_dir = Path(__file__).parent / "cells.json"
 
-execute_cell_finder(image_path_2, save_dir)
+# execute_cell_finder(image_path_2, save_dir)
+
+
+def find_images(directory: Path) -> list[Path]:
+    """TODO: This needs to be extended in order to find only
+    background images. see background_img_annotator.py"""
+    return sorted(directory.glob("*.png"))
+
+
+def run_cell_finder_on_directory(directory: Path) -> None:
+    bg_images = find_images(directory)
+    print(bg_images)
+    if not bg_images:
+        print("no images found")
+        return
+    for img in bg_images:
+        execute_cell_finder(img)
+
+
+data_dir = Path(__file__).parents[1] / "data" / "input"
+run_cell_finder_on_directory(data_dir)
