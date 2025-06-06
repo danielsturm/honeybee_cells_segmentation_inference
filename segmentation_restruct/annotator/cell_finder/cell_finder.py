@@ -93,7 +93,7 @@ def save_cells_to_json(results, file_path: Path, output_dir: Path | None):
         for x, y, r, s in results
     ]
     output_dir = output_dir if output_dir else file_path.parent
-    file_name = f"{file_path.stem}_labels.json"
+    file_name = f"{file_path.stem}.json"
     with open(output_dir / file_name, "w") as f:
         json.dump(cell_data, f, indent=2)
 

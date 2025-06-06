@@ -18,6 +18,8 @@ TODO:   - ✅ point size according to actual cell size
         - typing
         - totally custom layer to avoid points and labels layer
         - add point by hitting alt + doubleclick (probably not. can just go into add mode of point layer)
+        - initial point size should be higher
+        - image name should be displayed in ui
 
 TODO:   🧽 Add key "c" to clear the BrushMask layer after selection
 
@@ -26,6 +28,12 @@ TODO:   🧽 Add key "c" to clear the BrushMask layer after selection
         📝 Add save button in GUI instead of saving only on close
 
         🖱️ Add tooltips or points_layer.text to show the label on hover
+
+BUG:    - adding new point on small label size. point seems to disappear. when saving it crashes with
+        line 147, in _export_annotated_cells
+        "radius": int(r / 2),
+              ^^^^^^^^^^
+        ValueError: cannot convert float NaN to integer
 """
 
 
@@ -33,12 +41,12 @@ class HoneyCombAnnotator:
     point_max_rad = 100
     point_min_rad = 1
 
-    def __init__(
-        self, image_path: Path, label_in_path: Path, label_out_path: Path
-    ) -> None:
-        self.image_path = image_path
-        self.label_in_path = label_in_path
-        self.label_out_path = label_out_path
+    def __init__(self, data_dir: Path) -> None:
+        self.data_dir = data_dir
+        assert self.data_dir.exists(), "data dir does not exist"
+        self.image_paths, self.label_paths = self._find_data(data_dir)
+
+        self.image_idx = 0
 
         self.label_categories = [
             "unlabeled",
@@ -71,6 +79,33 @@ class HoneyCombAnnotator:
 
         self.viewer = napari.Viewer()
         self.points_layer, self.brush_layer = self._register_layers()
+        print(self.image_paths)
+        print(self.label_paths)
+
+    def _find_data(self, data_dir: Path) -> tuple[list[Path], dict[str, Path]]:
+        # TODO: Find only files with specific pattern
+        image_paths = sorted(data_dir.glob("*.png"))
+        label_paths = {p.stem: p for p in data_dir.glob("*.json")}
+        return image_paths, label_paths
+
+    def _load_data(self):
+        image_path = self.image_paths[self.image_idx]
+        image = imread(str(image_path))
+
+        label_path = self.label_paths.get(image_path.stem)
+        cells = []
+        if label_path and label_path.exists():
+            with open(label_path, "r") as f:
+                cells = json.load(f)
+
+        points, radii, labels = [], [], []
+        for cell in cells:
+            cx, cy, radius = cell["center_x"], cell["center_y"], cell["radius"]
+            points.append([cy, cx])
+            radii.append(radius * 2)
+            labels.append("unlabeled")
+
+        return image, np.array(points), np.array(radii, dtype=float), labels
 
     def _register_layers(self) -> tuple[Points, Labels]:
         image, points, radii, labels = self._load_data()
@@ -106,21 +141,23 @@ class HoneyCombAnnotator:
         ].brushSizeSlider.setMaximum(max_size)
         layer.brush_size = 40
 
-    def _load_data(self):
-        image = imread(str(self.image_path))
-        with open(self.label_in_path, "r") as f:
-            cells = json.load(f)
+    def _update_layers(self) -> None:
+        image, points, radii, labels = self._load_data()
+        self.viewer.layers["Honeycomb"].data = image
+        features = pd.DataFrame(
+            {
+                "cell_type": pd.Categorical(labels, categories=self.label_categories),
+                "radius": radii,
+            }
+        )
+        self.points_layer.data = points
 
-        points, radii, labels = [], [], []
-        for cell in cells:
-            cx, cy, radius = cell["center_x"], cell["center_y"], cell["radius"]
-            points.append([cy, cx])
-            radii.append(radius * 2)
-            labels.append("unlabeled")
+        self.points_layer.features = features
+        self.points_layer.size = radii
+        self.points_layer.selected_data = set()
+        self.brush_layer.data = np.zeros(image.shape[:2], dtype=np.uint8)
 
-        return image, np.array(points), np.array(radii, dtype=float), labels
-
-    def _export_annotated_cells(self, points_layer: Points, output_path: Path):
+    def _export_annotated_cells(self, points_layer: Points) -> None:
         points = points_layer.data
         sizes = points_layer.size  # array of radii
         labels = points_layer.features["cell_type"].tolist()
@@ -135,6 +172,9 @@ class HoneyCombAnnotator:
                     "label": label,
                 }
             )
+
+        curr_img_name = self.image_paths[self.image_idx].stem
+        output_path = self.data_dir / f"{curr_img_name}.json"
 
         with open(output_path, "w") as f:
             json.dump(exported, f, indent=2)
@@ -233,17 +273,31 @@ class HoneyCombAnnotator:
             i for i in self.points_layer.selected_data if i <= max_idx
         }
 
-    def _create_navigation_buttons(self):
+    def _create_navigation_buttons(self) -> Container[PushButton]:
         prev_button = PushButton(label="← Previous")
         next_button = PushButton(label="Next →")
 
-        prev_button.clicked.connect()
-        next_button.clicked.connect()
+        prev_button.clicked.connect(self._previous_image)
+        next_button.clicked.connect(self._next_image)
 
         button_container = Container(
             widgets=[prev_button, next_button], layout="horizontal"
         )
         return button_container
+
+    def _next_image(self) -> None:
+        self._export_annotated_cells(self.points_layer)
+
+        if self.image_idx + 1 < len(self.image_paths):
+            self.image_idx += 1
+            self._update_layers()
+
+    def _previous_image(self) -> None:
+        self._export_annotated_cells(self.points_layer)
+
+        if self.image_idx - 1 >= 0:
+            self.image_idx -= 1
+            self._update_layers()
 
     def run(self) -> None:
         self.points_layer.selected_data.events.items_changed.connect(
@@ -265,24 +319,15 @@ class HoneyCombAnnotator:
         appears again"""
         # self.points_layer.events.data.connect(self._on_points_data_change)
 
-        self.test()
-
         napari.run()
 
-        self._export_annotated_cells(self.points_layer, self.label_out_path)
-
-    def test(self):
-        pass
+        self._export_annotated_cells(self.points_layer)
 
 
-image_path_2 = Path(
-    r"C:\Users\sturmd\Desktop\Bachelorarbeit\ws=10_numimg=100_clahe=intermediate_dil=15_mdncomp=cupy_dur=233.png"
+data_dir = Path(
+    r"C:\Users\sturmd\Documents\Development\Privates\honeybee_cells_segmentation_inference\segmentation_restruct\annotator\data\input"
 )
 
-json_dir = Path(__file__).parents[1] / "cell_finder"
-json_in_dir = json_dir / "cells.json"
-json_out_dir = json_dir / "cells_annotated.json"
 
-
-annotator = HoneyCombAnnotator(image_path_2, json_in_dir, json_out_dir)
+annotator = HoneyCombAnnotator(data_dir=data_dir)
 annotator.run()
