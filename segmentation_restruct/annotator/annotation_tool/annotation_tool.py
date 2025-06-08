@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 import numpy as np
 import pandas as pd
-from magicgui.widgets import ComboBox, Container, PushButton
+from magicgui.widgets import ComboBox, Container, PushButton, Label
 
 
 """
@@ -281,17 +281,21 @@ class HoneyCombAnnotator:
             i for i in self.points_layer.selected_data if i <= max_idx
         }
 
-    def _create_navigation_buttons(self) -> Container[PushButton]:
+    def _create_navigation_buttons(self) -> Container[PushButton | Label]:
         prev_button = PushButton(label="← Previous")
+        self.nav_label = Label(label=self._nav_label_text())
         next_button = PushButton(label="Next →")
 
         prev_button.clicked.connect(self._previous_image)
         next_button.clicked.connect(self._next_image)
 
         button_container = Container(
-            widgets=[prev_button, next_button], layout="horizontal"
+            widgets=[prev_button, self.nav_label, next_button], layout="horizontal"
         )
         return button_container
+
+    def _nav_label_text(self) -> str:
+        return f"{self.image_idx + 1}/{len(self.image_paths)} images"
 
     def _next_image(self) -> None:
         self._export_annotated_cells(self.points_layer)
@@ -299,6 +303,7 @@ class HoneyCombAnnotator:
         if self.image_idx + 1 < len(self.image_paths):
             self.image_idx += 1
             self._update_layers()
+            self.nav_label.label = self._nav_label_text()
 
     def _previous_image(self) -> None:
         self._export_annotated_cells(self.points_layer)
@@ -306,6 +311,7 @@ class HoneyCombAnnotator:
         if self.image_idx - 1 >= 0:
             self.image_idx -= 1
             self._update_layers()
+            self.nav_label.label = self._nav_label_text()
 
     def run(self) -> None:
         self.points_layer.selected_data.events.items_changed.connect(
