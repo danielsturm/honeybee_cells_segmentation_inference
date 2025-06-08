@@ -10,7 +10,7 @@ from magicgui.widgets import ComboBox, Container, PushButton
 
 """
 TODO:   - ✅ point size according to actual cell size
-        - multiple images at once. how to load. switch between and save
+        - ✅ multiple images at once. how to load. switch between and save
         - key shortcuts (switch between layers, activate tools, opacity of points, next/prev image)
         - stop the user from using other tools. how to disable them?
         - ✅ increase size by scrolling (maybe alt + scrolling)
@@ -18,8 +18,10 @@ TODO:   - ✅ point size according to actual cell size
         - typing
         - totally custom layer to avoid points and labels layer
         - add point by hitting alt + doubleclick (probably not. can just go into add mode of point layer)
-        - initial point size should be higher
+        - initial point size should be higher (50)
         - image name should be displayed in ui
+        - all cells not activated, currently some are and some not
+        - a filed should indicate image x/of n. between arrows
 
 TODO:   🧽 Add key "c" to clear the BrushMask layer after selection
 
@@ -47,6 +49,7 @@ class HoneyCombAnnotator:
         self.image_paths, self.label_paths = self._find_data(data_dir)
 
         self.image_idx = 0
+        self.image_layer_name = ""
 
         self.label_categories = [
             "unlabeled",
@@ -79,8 +82,6 @@ class HoneyCombAnnotator:
 
         self.viewer = napari.Viewer()
         self.points_layer, self.brush_layer = self._register_layers()
-        print(self.image_paths)
-        print(self.label_paths)
 
     def _find_data(self, data_dir: Path) -> tuple[list[Path], dict[str, Path]]:
         # TODO: Find only files with specific pattern
@@ -90,6 +91,7 @@ class HoneyCombAnnotator:
 
     def _load_data(self):
         image_path = self.image_paths[self.image_idx]
+        image_name = image_path.stem
         image = imread(str(image_path))
 
         label_path = self.label_paths.get(image_path.stem)
@@ -100,16 +102,22 @@ class HoneyCombAnnotator:
 
         points, radii, labels = [], [], []
         for cell in cells:
-            cx, cy, radius = cell["center_x"], cell["center_y"], cell["radius"]
+            cx, cy, radius, label = (
+                cell["center_x"],
+                cell["center_y"],
+                cell["radius"],
+                cell["label"],
+            )
             points.append([cy, cx])
             radii.append(radius * 2)
-            labels.append("unlabeled")
+            labels.append(label)
 
-        return image, np.array(points), np.array(radii, dtype=float), labels
+        return image, image_name, np.array(points), np.array(radii, dtype=float), labels
 
     def _register_layers(self) -> tuple[Points, Labels]:
-        image, points, radii, labels = self._load_data()
-
+        image, image_name, points, radii, labels = self._load_data()
+        self.image_layer_name = image_name
+        print("restigster layers", self.image_layer_name)
         self.viewer.add_image(image, name="Honeycomb")
 
         features = pd.DataFrame(
@@ -142,8 +150,11 @@ class HoneyCombAnnotator:
         layer.brush_size = 40
 
     def _update_layers(self) -> None:
-        image, points, radii, labels = self._load_data()
+        image, image_name, points, radii, labels = self._load_data()
+        print("old image name in update layers", self.image_layer_name)
         self.viewer.layers["Honeycomb"].data = image
+        self.image_layer_name = image_name
+        print("new image name in update layers", self.image_layer_name)
         features = pd.DataFrame(
             {
                 "cell_type": pd.Categorical(labels, categories=self.label_categories),
@@ -155,6 +166,7 @@ class HoneyCombAnnotator:
         self.points_layer.features = features
         self.points_layer.size = radii
         self.points_layer.selected_data = set()
+        self._update_point_borders()
         self.brush_layer.data = np.zeros(image.shape[:2], dtype=np.uint8)
 
     def _export_annotated_cells(self, points_layer: Points) -> None:
