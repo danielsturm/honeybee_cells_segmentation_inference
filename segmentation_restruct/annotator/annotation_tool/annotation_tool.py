@@ -23,13 +23,10 @@ TODO:   - ✅ point size according to actual cell size
         - all cells not activated, currently some are and some not
         - a filed should indicate image x/of n. between arrows
 
-TODO:   🧽 Add key "c" to clear the BrushMask layer after selection
-
-        👀 Add visual feedback (e.g., print selected labels/counts)
-
-        📝 Add save button in GUI instead of saving only on close
-
-        🖱️ Add tooltips or points_layer.text to show the label on hover
+TODO:   - Add key "c" to clear the BrushMask layer after selection
+        - Add visual feedback (e.g., print selected labels/counts)
+        - Add save button in GUI instead of saving only on close
+        - Add tooltips or points_layer.text to show the label on hover
 
 BUG:    - adding new point on small label size. point seems to disappear. when saving it crashes with
         line 147, in _export_annotated_cells
@@ -117,8 +114,7 @@ class HoneyCombAnnotator:
     def _register_layers(self) -> tuple[Points, Labels]:
         image, image_name, points, radii, labels = self._load_data()
         self.image_layer_name = image_name
-        print("restigster layers", self.image_layer_name)
-        self.viewer.add_image(image, name="Honeycomb")
+        self.viewer.add_image(image, name=image_name)
 
         features = pd.DataFrame(
             {
@@ -151,10 +147,10 @@ class HoneyCombAnnotator:
 
     def _update_layers(self) -> None:
         image, image_name, points, radii, labels = self._load_data()
-        print("old image name in update layers", self.image_layer_name)
-        self.viewer.layers["Honeycomb"].data = image
+        self.viewer.layers[self.image_layer_name].data = image
+        self.viewer.layers[self.image_layer_name].name = image_name
         self.image_layer_name = image_name
-        print("new image name in update layers", self.image_layer_name)
+
         features = pd.DataFrame(
             {
                 "cell_type": pd.Categorical(labels, categories=self.label_categories),
