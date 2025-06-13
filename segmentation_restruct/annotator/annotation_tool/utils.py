@@ -1,8 +1,15 @@
-from qtpy.QtWidgets import QWidget, QLabel, QLayoutItem
+from qtpy.QtWidgets import QWidget, QLabel, QLayoutItem, QPushButton
 from qtpy.QtCore import QTimer
 from napari import Viewer
 from napari.layers import Points, Labels, Layer
 from functools import partial
+import re
+
+"""This is mostly a hacky workaround to disable functionality of the
+napari ui to stop the user of doing things we don't want them to do.
+This could not work in the future if things on the napari implementation
+change.
+See also here: https://forum.image.sc/t/disable-buttons-on-shapes-layer/55243/3"""
 
 
 def restrict_brush_layer_tools(
@@ -22,6 +29,7 @@ def restrict_brush_layer_tools(
     QTimer.singleShot(100, lambda: hide_unwanted_buttons(viewer, brush_layer))
     QTimer.singleShot(200, lambda: hide_brush_controls(viewer, brush_layer))
     QTimer.singleShot(250, lambda: hide_points_controls(viewer, points_layer))
+    QTimer.singleShot(300, lambda: hide_layerlist_buttons(viewer))
 
 
 def hide_unwanted_layer_controls(
@@ -64,86 +72,6 @@ def hide_unwanted_layer_controls(
                         next_widget.hide()
 
 
-def hide_unwanted_points_layer_controlls(viewer: Viewer, points_layer: Points) -> None:
-    qt_controls = viewer.window._qt_viewer.controls
-    points_controls = qt_controls.widgets.get(points_layer)
-
-    if points_controls is None:
-        print("[DEBUG] Points controls not ready.")
-        return
-
-    print("[DEBUG] Hiding brush layer controls...")
-
-    layout = points_controls.layout()
-    if not layout:
-        print("[DEBUG] No layout found in brush_controls.")
-        return
-
-    allowed_labels = {"opacity", "point size"}
-
-    for i in range(layout.count()):
-        item = layout.itemAt(i)
-        if not isinstance(item, QLayoutItem):
-            continue
-
-        widget = item.widget()
-        if widget is None:
-            continue
-
-        if isinstance(widget, QLabel):
-            label_text = widget.text().strip(":").lower()
-            if label_text not in allowed_labels:
-                print(f"[DEBUG] Hiding row with label: {label_text}")
-                widget.hide()
-
-                # Also try to hide the associated next widget (control)
-                next_item = layout.itemAt(i + 1)
-                if next_item:
-                    next_widget = next_item.widget()
-                    if next_widget:
-                        next_widget.hide()
-
-
-def hide_unwanted_controls(viewer: Viewer, brush_layer: Labels):
-    qt_controls = viewer.window._qt_viewer.controls
-    brush_controls = qt_controls.widgets.get(brush_layer)
-
-    if brush_controls is None:
-        print("[DEBUG] Brush controls not ready.")
-        return
-
-    print("[DEBUG] Hiding brush layer controls...")
-
-    layout = brush_controls.layout()
-    if not layout:
-        print("[DEBUG] No layout found in brush_controls.")
-        return
-
-    allowed_labels = {"opacity", "brush size", "label"}
-
-    for i in range(layout.count()):
-        item = layout.itemAt(i)
-        if not isinstance(item, QLayoutItem):
-            continue
-
-        widget = item.widget()
-        if widget is None:
-            continue
-
-        if isinstance(widget, QLabel):
-            label_text = widget.text().strip(":").lower()
-            if label_text not in allowed_labels:
-                print(f"[DEBUG] Hiding row with label: {label_text}")
-                widget.hide()
-
-                # Also try to hide the associated next widget (control)
-                next_item = layout.itemAt(i + 1)
-                if next_item:
-                    next_widget = next_item.widget()
-                    if next_widget:
-                        next_widget.hide()
-
-
 # Delay execution until the viewer and all widgets are fully initialized
 def hide_unwanted_buttons(viewer: Viewer, brush_layer: Labels):
     qt_controls = viewer.window._qt_viewer.controls
@@ -173,3 +101,22 @@ def hide_unwanted_buttons(viewer: Viewer, brush_layer: Labels):
             ):
                 print(f"[DEBUG] Hiding button with tooltip: {tip}")
                 child.hide()
+
+
+def hide_layerlist_buttons(viewer: Viewer):
+    buttons_widget = viewer.window._qt_viewer.layerButtons
+
+    if buttons_widget is None:
+        print("[DEBUG] Layer buttons panel not found.")
+        return
+
+    print("[DEBUG] Hiding layer control buttons with regex...")
+    pattern = re.compile(r"^(new|delete).*layer")
+
+    for btn in buttons_widget.findChildren(QPushButton):
+        tooltip = btn.toolTip().strip().lower()
+        print(f"[DEBUG] Tooltip: {tooltip}")
+
+        if pattern.match(tooltip):
+            print(f"[DEBUG] Hiding button with tooltip: {tooltip}")
+            btn.hide()

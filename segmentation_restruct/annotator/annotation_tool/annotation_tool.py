@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 from magicgui.widgets import ComboBox, Container, PushButton, Label
 
+from utils import restrict_brush_layer_tools
 
 """
 TODO:   - ✅ point size according to actual cell size
@@ -22,6 +23,8 @@ TODO:   - ✅ point size according to actual cell size
         - image name should be displayed in ui
         - all cells not activated, currently some are and some not
         - a filed should indicate image x/of n. between arrows
+        - initial label type should be unlabled
+        - Logging!!!
 
 TODO:   - Add key "c" to clear the BrushMask layer after selection
         - Add visual feedback (e.g., print selected labels/counts)
@@ -332,6 +335,8 @@ class HoneyCombAnnotator:
         IndexError: index 3478 is out of bounds for axis 0 with size 3478
         appears again"""
         # self.points_layer.events.data.connect(self._on_points_data_change)
+
+        restrict_brush_layer_tools(self.viewer, self.brush_layer, self.points_layer)
 
         napari.run()
 
