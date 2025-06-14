@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 from magicgui.widgets import ComboBox, Container, PushButton, Label
 
-from utils import restrict_brush_layer_tools
+from utils import restrict_brush_layer_tools, setup_logger
 
 """
 TODO:   - ✅ point size according to actual cell size
@@ -24,7 +24,7 @@ TODO:   - ✅ point size according to actual cell size
         - all cells not activated, currently some are and some not
         - ✅ a filed should indicate image x/of n. between arrows
         - initial label type should be unlabled
-        - Logging!!!
+        - ✅ Logging!!!
 
 TODO:   - Add key "c" to clear the BrushMask layer after selection
         - Add visual feedback (e.g., print selected labels/counts)
@@ -36,6 +36,9 @@ BUG:    - adding new point on small label size. point seems to disappear. when s
         "radius": int(r / 2),
               ^^^^^^^^^^
         ValueError: cannot convert float NaN to integer
+
+        - select points in brush layer -> switch to points layer -> remove the points
+        -> all points are gone. even in other images. but not deleted. restarting brings them back
 """
 
 
@@ -46,6 +49,7 @@ class HoneyCombAnnotator:
     def __init__(self, data_dir: Path) -> None:
         self.data_dir = data_dir
         assert self.data_dir.exists(), "data dir does not exist"
+        self.logger = setup_logger(self.data_dir)
         self.image_paths, self.label_paths = self._find_data(data_dir)
 
         self.image_idx = 0
@@ -93,12 +97,15 @@ class HoneyCombAnnotator:
         image_path = self.image_paths[self.image_idx]
         image_name = image_path.stem
         image = imread(str(image_path))
+        self.logger.info(f"loading image {image_path}")
 
         label_path = self.label_paths.get(image_path.stem)
         cells = []
         if label_path and label_path.exists():
             with open(label_path, "r") as f:
                 cells = json.load(f)
+        else:
+            self.logger.warning(f"No labels json found for {image_path.stem}")
 
         points, radii, labels = [], [], []
         for cell in cells:
@@ -190,6 +197,7 @@ class HoneyCombAnnotator:
 
         with open(output_path, "w") as f:
             json.dump(exported, f, indent=2)
+        self.logger.info(f"Exporting {len(exported)} to {output_path}")
 
     def _update_point_borders(self) -> None:
         if len(self.points_layer.data) == 0:
@@ -214,7 +222,6 @@ class HoneyCombAnnotator:
                     if mask_array[int(y), int(x)] == 1:
                         selected.add(i)
 
-            # print(points_layer.mode)
             self.points_layer.selected_data = selected
 
             self._update_point_borders()
@@ -225,13 +232,6 @@ class HoneyCombAnnotator:
             self.brush_layer.events.paint.connect(self._on_brush_mask_change)
 
     def _on_scroll_change_point_size(self, _, event):
-        # print(type(event))
-        # print(event.type)
-        # print(event.delta)
-        # print(event.modifiers)
-        # print(event.is_dragging)
-        # print(event.button)
-        # print(event.position)
 
         if "Alt" not in event.modifiers:
             return
@@ -308,6 +308,9 @@ class HoneyCombAnnotator:
             self.image_idx += 1
             self._update_layers()
             self.nav_label.label = self._nav_label_text()
+            self.logger.info(
+                f"navigated to {self._nav_label_text()}: {self.image_paths[self.image_idx]}"
+            )
 
     def _previous_image(self) -> None:
         self._export_annotated_cells(self.points_layer)
@@ -316,11 +319,13 @@ class HoneyCombAnnotator:
             self.image_idx -= 1
             self._update_layers()
             self.nav_label.label = self._nav_label_text()
+            self.logger.info(
+                f"navigated to {self._nav_label_text()}: {self.image_paths[self.image_idx]}"
+            )
 
     def _connect_brush_auto_mode(self, brush_layer: Labels):
         def on_active_layer_change(event):
             if self.viewer.layers.selection.active == brush_layer:
-                print("[DEBUG] Re-activating paint mode")
                 brush_layer.mode = "paint"
                 brush_layer.brush_size = 70
 
@@ -352,6 +357,7 @@ class HoneyCombAnnotator:
         napari.run()
 
         self._export_annotated_cells(self.points_layer)
+        self.logger.info("Closing HoneyComb Annotator")
 
 
 data_dir = Path(
