@@ -1,10 +1,12 @@
 import napari
 from napari.layers import Points, Labels
+from napari.layers._data_protocols import LayerDataProtocol
 from skimage.io import imread
 import json
 from pathlib import Path
 import numpy as np
 import pandas as pd
+from typing import cast
 from magicgui.widgets import ComboBox, Container, PushButton, Label
 
 from utils import restrict_brush_layer_tools, setup_logger
@@ -93,7 +95,7 @@ class HoneyCombAnnotator:
         label_paths = {p.stem: p for p in data_dir.glob("*.json")}
         return image_paths, label_paths
 
-    def _load_data(self):
+    def _load_data(self) -> tuple[np.ndarray, str, np.ndarray, np.ndarray, list[str]]:
         image_path = self.image_paths[self.image_idx]
         image_name = image_path.stem
         image = imread(str(image_path))
@@ -137,7 +139,7 @@ class HoneyCombAnnotator:
             features=features,
             face_color="cell_type",
             face_color_cycle=self.color_map,
-            size=features["radius"].values,
+            size=features["radius"].values,  # type: ignore
             name="Cells",
         )
         points_layer.face_color_mode = "cycle"
@@ -149,7 +151,7 @@ class HoneyCombAnnotator:
 
         return points_layer, brush_layer
 
-    def _set_custom_brush_limit(self, layer: Labels, max_size: int = 150):
+    def _set_custom_brush_limit(self, layer: Labels, max_size: int = 150) -> None:
         self.viewer.window._qt_viewer.controls.widgets[
             layer
         ].brushSizeSlider.setMaximum(max_size)
@@ -172,9 +174,11 @@ class HoneyCombAnnotator:
 
         self.points_layer.features = features
         self.points_layer.size = radii
-        self.points_layer.selected_data = set()
+        self.points_layer.selected_data = set()  # type: ignore
         self._update_point_borders()
-        self.brush_layer.data = np.zeros(image.shape[:2], dtype=np.uint8)
+        new_data = np.zeros(image.shape[:2], dtype=np.uint8)
+        self.brush_layer.data = cast(LayerDataProtocol, new_data)
+        # self.brush_layer.data = np.zeros(image.shape[:2], dtype=np.uint8)
 
     def _export_annotated_cells(self, points_layer: Points) -> None:
         points = points_layer.data
@@ -210,7 +214,7 @@ class HoneyCombAnnotator:
         ]
         self.points_layer.border_color = border_colors
 
-    def _on_brush_mask_change(self):
+    def _on_brush_mask_change(self) -> None:
         if self.brush_layer.mode == "paint":
             mask_array = self.brush_layer.data
             selected = set()
@@ -219,19 +223,21 @@ class HoneyCombAnnotator:
                     0 <= int(y) < mask_array.shape[0]
                     and 0 <= int(x) < mask_array.shape[1]
                 ):
-                    if mask_array[int(y), int(x)] == 1:
+                    if mask_array[int(y), int(x)] == 1:  # type: ignore
                         selected.add(i)
 
-            self.points_layer.selected_data = selected
+            self.points_layer.selected_data = selected  # type: ignore
 
             self._update_point_borders()
 
             # === Prevent infinite recursion ===
             self.brush_layer.events.paint.disconnect(self._on_brush_mask_change)
-            self.brush_layer.data = np.zeros_like(self.brush_layer.data)
+            new_data = np.zeros_like(self.brush_layer.data)
+            self.brush_layer.data = cast(LayerDataProtocol, new_data)
+            # self.brush_layer.data = np.zeros_like(self.brush_layer.data)
             self.brush_layer.events.paint.connect(self._on_brush_mask_change)
 
-    def _on_scroll_change_point_size(self, _, event):
+    def _on_scroll_change_point_size(self, _, event) -> None:
 
         if "Alt" not in event.modifiers:
             return
@@ -247,11 +253,11 @@ class HoneyCombAnnotator:
             new_radius = min(self.point_max_rad, max(self.point_min_rad, new_radius))
             self.points_layer.features.at[i, "radius"] = new_radius
 
-        self.points_layer.size = self.points_layer.features["radius"].values
+        self.points_layer.size = self.points_layer.features["radius"].values  # type: ignore
 
-        self.points_layer.selected_data = set(selected)
+        self.points_layer.selected_data = set(selected)  # type: ignore
 
-    def _create_label_menu(self):
+    def _create_label_menu(self) -> Container[ComboBox]:
         label_menu = ComboBox(label="cell_type", choices=self.label_categories)
         label_widget = Container(widgets=[label_menu])
 
@@ -263,10 +269,8 @@ class HoneyCombAnnotator:
         return label_widget
 
     def _label_changed(self, selected_label: str) -> None:
-        # Assign label to selected points
         selected = list(self.points_layer.selected_data)
         if not selected:
-            # No selection → update feature_defaults for new points
             feature_defaults = self.points_layer.feature_defaults
             feature_defaults["cell_type"] = selected_label
             self.points_layer.feature_defaults = feature_defaults
@@ -283,7 +287,7 @@ class HoneyCombAnnotator:
         max_idx = len(self.points_layer.data) - 1
         self.points_layer.selected_data = {
             i for i in self.points_layer.selected_data if i <= max_idx
-        }
+        }  # type: ignore
 
     def _create_navigation_buttons(self) -> Container[PushButton | Label]:
         prev_button = PushButton(label="← Previous")
@@ -323,7 +327,7 @@ class HoneyCombAnnotator:
                 f"navigated to {self._nav_label_text()}: {self.image_paths[self.image_idx]}"
             )
 
-    def _connect_brush_auto_mode(self, brush_layer: Labels):
+    def _connect_brush_auto_mode(self, brush_layer: Labels) -> None:
         def on_active_layer_change(event):
             if self.viewer.layers.selection.active == brush_layer:
                 brush_layer.mode = "paint"
