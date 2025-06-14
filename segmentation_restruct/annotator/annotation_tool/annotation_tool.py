@@ -13,16 +13,16 @@ from utils import restrict_brush_layer_tools
 TODO:   - ✅ point size according to actual cell size
         - ✅ multiple images at once. how to load. switch between and save
         - key shortcuts (switch between layers, activate tools, opacity of points, next/prev image)
-        - stop the user from using other tools. how to disable them?
+        - ✅ stop the user from using other tools. how to disable them?
         - ✅ increase size by scrolling (maybe alt + scrolling)
-        - position the drop down and the buttons correctly
+        - 🛠️ position the drop down and the buttons correctly
         - typing
-        - totally custom layer to avoid points and labels layer
+        - 💤 totally custom layer to avoid points and labels layer
         - add point by hitting alt + doubleclick (probably not. can just go into add mode of point layer)
         - initial point size should be higher (50)
-        - image name should be displayed in ui
+        - ✅ image name should be displayed in ui
         - all cells not activated, currently some are and some not
-        - a filed should indicate image x/of n. between arrows
+        - ✅ a filed should indicate image x/of n. between arrows
         - initial label type should be unlabled
         - Logging!!!
 
@@ -146,7 +146,8 @@ class HoneyCombAnnotator:
         self.viewer.window._qt_viewer.controls.widgets[
             layer
         ].brushSizeSlider.setMaximum(max_size)
-        layer.brush_size = 40
+        layer.brush_size = 70
+        layer.mode = "paint"
 
     def _update_layers(self) -> None:
         image, image_name, points, radii, labels = self._load_data()
@@ -316,6 +317,15 @@ class HoneyCombAnnotator:
             self._update_layers()
             self.nav_label.label = self._nav_label_text()
 
+    def _connect_brush_auto_mode(self, brush_layer: Labels):
+        def on_active_layer_change(event):
+            if self.viewer.layers.selection.active == brush_layer:
+                print("[DEBUG] Re-activating paint mode")
+                brush_layer.mode = "paint"
+                brush_layer.brush_size = 70
+
+        self.viewer.layers.selection.events.active.connect(on_active_layer_change)
+
     def run(self) -> None:
         self.points_layer.selected_data.events.items_changed.connect(
             lambda e: self._update_point_borders()
@@ -337,6 +347,7 @@ class HoneyCombAnnotator:
         # self.points_layer.events.data.connect(self._on_points_data_change)
 
         restrict_brush_layer_tools(self.viewer, self.brush_layer, self.points_layer)
+        self._connect_brush_auto_mode(self.brush_layer)
 
         napari.run()
 
