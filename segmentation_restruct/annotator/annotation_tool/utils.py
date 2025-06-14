@@ -3,7 +3,41 @@ from qtpy.QtCore import QTimer
 from napari import Viewer
 from napari.layers import Points, Labels, Layer
 from functools import partial
+from pathlib import Path
+import logging
 import re
+import sys
+
+
+def setup_logger(log_dir: Path = Path("."), level=logging.DEBUG) -> logging.Logger:
+    log_file = log_dir / "honeycomb_annotator.log"
+
+    logger = logging.getLogger("honeycomb_annotation")
+    logger.setLevel(level)
+
+    if not logger.handlers:
+        file_handler = logging.FileHandler(log_file, mode="a")
+        formatter = logging.Formatter(
+            "%(asctime)s - [%(levelname)s] - %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        )
+        file_handler.setFormatter(formatter)
+        logger.addHandler(file_handler)
+
+    def handle_uncaught_exception(exc_type, exc_value, exc_traceback):
+        if issubclass(exc_type, KeyboardInterrupt):
+            sys.__excepthook__(exc_type, exc_value, exc_traceback)
+            return
+
+        logger.critical(
+            "Uncaught exception", exc_info=(exc_type, exc_value, exc_traceback)
+        )
+
+    sys.excepthook = handle_uncaught_exception
+
+    logger.info("Honeycomb anntoator started")
+    return logger
+
 
 """This is mostly a hacky workaround to disable functionality of the
 napari ui to stop the user of doing things we don't want them to do.
@@ -39,13 +73,12 @@ def hide_unwanted_layer_controls(
     layer_controls = qt_controls.widgets.get(layer)
 
     if layer_controls is None:
-        print(f"[DEBUG] Controls for layer '{layer.name}' not ready.")
+        logging.debug(f"Controls for layer '{layer.name}' not ready")
         return
 
-    print(f"[DEBUG] Hiding unwanted controls for layer: {layer.name}")
     layout = layer_controls.layout()
     if not layout:
-        print(f"[DEBUG] No layout found in layer controls: {layer.name}")
+        logging.debug(f"No layout found in layer controls: {layer.name}")
         return
 
     for i in range(layout.count()):
@@ -60,9 +93,7 @@ def hide_unwanted_layer_controls(
         if isinstance(widget, QLabel):
             label_text = widget.text().strip(":").lower()
             if label_text not in allowed_labels:
-                print(
-                    f"[DEBUG] Hiding row with label '{label_text}' in layer '{layer.name}'"
-                )
+                logging.debug(f"Hiding row with label '{label_text}'")
                 widget.hide()
 
                 next_item = layout.itemAt(i + 1)
@@ -72,18 +103,14 @@ def hide_unwanted_layer_controls(
                         next_widget.hide()
 
 
-# Delay execution until the viewer and all widgets are fully initialized
 def hide_unwanted_buttons(viewer: Viewer, brush_layer: Labels):
     qt_controls = viewer.window._qt_viewer.controls
     brush_controls = qt_controls.widgets.get(brush_layer)
 
     if brush_controls is None:
-        print("[DEBUG] Brush controls not ready.")
+        logging.debug("Brush controls not ready")
         return
 
-    print("[DEBUG] Hiding unwanted brush mode buttons...")
-
-    # Look through all children widgets and hide unwanted ones
     for child in brush_controls.findChildren(QWidget):
         if hasattr(child, "toolTip"):
             tip = str(child.toolTip()).lower()
@@ -99,7 +126,7 @@ def hide_unwanted_buttons(viewer: Viewer, brush_layer: Labels):
                     "shuffle",
                 ]
             ):
-                print(f"[DEBUG] Hiding button with tooltip: {tip}")
+                logging.debug(f"Hiding button with tooltip: {tip}")
                 child.hide()
 
 
@@ -107,16 +134,14 @@ def hide_layerlist_buttons(viewer: Viewer):
     buttons_widget = viewer.window._qt_viewer.layerButtons
 
     if buttons_widget is None:
-        print("[DEBUG] Layer buttons panel not found.")
+        logging.debug("Layer buttons panel not found")
         return
 
-    print("[DEBUG] Hiding layer control buttons with regex...")
     pattern = re.compile(r"^(new|delete).*layer")
 
     for btn in buttons_widget.findChildren(QPushButton):
         tooltip = btn.toolTip().strip().lower()
-        print(f"[DEBUG] Tooltip: {tooltip}")
 
         if pattern.match(tooltip):
-            print(f"[DEBUG] Hiding button with tooltip: {tooltip}")
+            logging.debug(f"Hiding button with tooltip: {tooltip}")
             btn.hide()
