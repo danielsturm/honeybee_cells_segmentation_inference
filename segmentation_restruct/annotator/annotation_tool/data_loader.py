@@ -2,6 +2,7 @@ from pathlib import Path
 import numpy as np
 import logging
 import json
+import uuid
 from skimage.io import imread
 
 
@@ -12,6 +13,10 @@ class DataLoader:
         assert self.data_dir.exists(), "data dir does not exist"
 
         self.image_paths, self.label_paths = self._find_data(data_dir)
+
+    @property
+    def data_count(self) -> int:
+        return len(self.image_paths)
 
     def _find_data(self, data_dir: Path) -> tuple[list[Path], dict[str, Path]]:
         # TODO: Find only files with specific pattern
@@ -39,18 +44,17 @@ class DataLoader:
         """TODO: Instead use the cell dataclass and make a list of it.
         return AnnotationDTO. The DTO should provide functions to return
         ids, points etc as lists"""
-        ids, points, radii, labels = [], [], [], []
+        ids, points, point_diamters, labels = [], [], [], []
         for cell in cells:
-            id, cx, cy, radius, label = (
-                cell["id"],
-                cell["center_x"],
-                cell["center_y"],
-                cell["radius"],
-                cell["label"],
-            )
+            id = cell.get("id", str(uuid.uuid4()))
+            cx = cell["center_x"]
+            cy = cell["center_y"]
+            radius = cell["radius"]
+            label = cell["label"]
+
             ids.append(id)
             points.append([cy, cx])
-            radii.append(radius * 2)
+            point_diamters.append(radius * 2)
             labels.append(label)
 
         return (
@@ -58,7 +62,7 @@ class DataLoader:
             image_name,
             ids,
             np.array(points),
-            np.array(radii, dtype=float),
+            np.array(point_diamters, dtype=float),
             labels,
         )
 
@@ -67,12 +71,12 @@ class DataLoader:
         image_idx: int,
         ids: list[str],
         points: np.ndarray,
-        radii: np.ndarray,
+        point_diameters: np.ndarray,
         labels: list[str],
     ) -> None:
         """TODO: Pass Annotation DTO instead and use the Cell data class"""
         exported = []
-        for id, (y, x), r, label in zip(ids, points, radii, labels):
+        for id, (y, x), r, label in zip(ids, points, point_diameters, labels):
             exported.append(
                 {
                     "id": id,
@@ -88,4 +92,4 @@ class DataLoader:
 
         with open(output_path, "w") as f:
             json.dump(exported, f, indent=2)
-        self.logger.info(f"Exporting {len(exported)} to {output_path}")
+        self.logger.info(f"Exporting {len(exported)} cells to {output_path}")
