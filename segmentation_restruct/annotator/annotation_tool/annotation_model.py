@@ -43,9 +43,7 @@ class HoneyCombAnnotationData:
         self._image_name = image_name
         self.cells = []
         for id, (y, x), r, label in zip(ids, points, point_diameters, labels):
-            self.cells.append(
-                Cell(id=id, x=float(x), y=float(y), diameter=float(r), label=label)
-            )
+            self.cells.append(Cell(id=id, x=float(x), y=float(y), diameter=float(r), label=label))
 
     def add_cells(self, added_cells: list[Cell]) -> None:
         existing_ids = {cell.id for cell in self.cells}
@@ -68,9 +66,7 @@ class HoneyCombAnnotationData:
     def remove_cells(self, cells: list[Cell]) -> None:
         ids_to_remove = {cell.id for cell in cells}
         self.cells = [cell for cell in self.cells if cell.id not in ids_to_remove]
-        self.logger.info(
-            f"Removed {len(ids_to_remove)} cells. Remaining cells: {len(self.cells)}"
-        )
+        self.logger.info(f"Removed {len(ids_to_remove)} cells. Remaining cells: {len(self.cells)}")
 
     @property
     def cell_data(self) -> tuple[list[str], np.ndarray, np.ndarray, list[str]]:
@@ -78,9 +74,7 @@ class HoneyCombAnnotationData:
         points = np.array([[cell.y, cell.x] for cell in self.cells])
         point_diameters = np.array([cell.diameter for cell in self.cells])
         labels = [cell.label for cell in self.cells]
-        assert (
-            len(ids) == len(points) == len(point_diameters) == len(labels)
-        ), "cell data is inconsistent"
+        assert len(ids) == len(points) == len(point_diameters) == len(labels), "cell data is inconsistent"
         return ids, points, point_diameters, labels
 
     @property

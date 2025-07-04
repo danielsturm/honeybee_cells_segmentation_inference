@@ -61,9 +61,7 @@ class AnnotationController:
             case "removed":
                 self.data.remove_cells(changed_points)
             case _:
-                self.logger.error(
-                    "Unsupported switch case in controller (point data changed)"
-                )
+                self.logger.error("Unsupported switch case in controller (point data changed)")
 
     def on_image_change_clicked(self, direction: str) -> None:
         self._export_data()
@@ -79,9 +77,7 @@ class AnnotationController:
                     self.image_idx -= 1
                     self.load_new_image(self.image_idx)
             case _:
-                self.logger.error(
-                    "Unsupported switch case in controller (image switch)"
-                )
+                self.logger.error("Unsupported switch case in controller (image switch)")
 
     def _nav_label_text(self) -> str:
         return f"{self.image_idx + 1}/{self.loader.data_count} images"

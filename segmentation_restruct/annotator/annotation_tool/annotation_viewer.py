@@ -1,5 +1,5 @@
 import napari
-from napari.layers import Points, Labels, Image
+from napari.layers import Image
 from napari.layers._data_protocols import LayerDataProtocol
 import logging
 import numpy as np
@@ -14,8 +14,8 @@ from qtpy.QtCore import QObject, Signal  # type: ignore
 
 
 class AnnotationViewer(QObject):
-    point_max_rad = 100
-    point_min_rad = 1
+    point_max_diameter = 100
+    point_min_diameter = 1
 
     label_changed = Signal(str, list)
     point_data_changed = Signal(str, list)
@@ -33,8 +33,6 @@ class AnnotationViewer(QObject):
         self.viewer = napari.Viewer()
         self.label_menu = self._create_label_menu()
         self.nav_buttons = self._create_navigation_buttons()
-        self.points_layer = Points | None
-        self.brush_layer = Labels | None
 
     def register_layers(self, data: AnnotationDTO, button_label: str) -> None:
         # image layer
@@ -43,9 +41,7 @@ class AnnotationViewer(QObject):
         # points layer
         points_layer = self.viewer.add_points(
             data.points,
-            features=self._construct_features(
-                data.labels, data.point_diameters, data.ids
-            ),
+            features=self._construct_features(data.labels, data.point_diameters, data.ids),
             face_color="cell_type",
             face_color_cycle=self.label_map,
             size=data.point_diameters,  # type: ignore
@@ -53,15 +49,14 @@ class AnnotationViewer(QObject):
         )
         points_layer.face_color_mode = "cycle"
         self.points_layer = points_layer
+        self._set_init_point_size()
         self._update_feature_defaults_with_uuid()
         self._update_feature_defaults_with_point_size()
         self._update_point_borders()
         self.update_button_label(button_label)
 
         # brush layer
-        self.brush_layer = self.viewer.add_labels(
-            np.zeros(data.image.shape[:2], dtype=np.uint8), name="BrushMask"
-        )
+        self.brush_layer = self.viewer.add_labels(np.zeros(data.image.shape[:2], dtype=np.uint8), name="BrushMask")
         self._set_custom_brush_limit()
         restrict_brush_layer_tools(self.viewer, self.brush_layer, self.points_layer)
 
@@ -72,9 +67,7 @@ class AnnotationViewer(QObject):
 
         # points layer
         self.points_layer.data = data.points
-        self.points_layer.features = self._construct_features(
-            data.labels, data.point_diameters, data.ids
-        )
+        self.points_layer.features = self._construct_features(data.labels, data.point_diameters, data.ids)
         self.points_layer.size = data.point_diameters
         self._update_point_borders()
 
@@ -96,9 +89,7 @@ class AnnotationViewer(QObject):
     def label_categories(self) -> list[str]:
         return list(self.label_map.keys())
 
-    def _construct_features(
-        self, labels: list[str], point_diameters: np.ndarray, ids: list[str]
-    ) -> pd.DataFrame:
+    def _construct_features(self, labels: list[str], point_diameters: np.ndarray, ids: list[str]) -> pd.DataFrame:
         return pd.DataFrame(
             {
                 "cell_type": pd.Categorical(labels, categories=self.label_categories),
@@ -107,10 +98,11 @@ class AnnotationViewer(QObject):
             }
         )
 
+    def _set_init_point_size(self, init_size: int = 46) -> None:
+        self.points_layer.current_size = init_size
+
     def _set_custom_brush_limit(self, max_size: int = 150) -> None:
-        self.viewer.window._qt_viewer.controls.widgets[
-            self.brush_layer
-        ].brushSizeSlider.setMaximum(max_size)
+        self.viewer.window._qt_viewer.controls.widgets[self.brush_layer].brushSizeSlider.setMaximum(max_size)
         self.brush_layer.brush_size = 70
         self.brush_layer.mode = "paint"
 
@@ -119,10 +111,7 @@ class AnnotationViewer(QObject):
             mask_array = self.brush_layer.data
             selected = set()
             for i, (y, x) in enumerate(self.points_layer.data):
-                if (
-                    0 <= int(y) < mask_array.shape[0]
-                    and 0 <= int(x) < mask_array.shape[1]
-                ):
+                if 0 <= int(y) < mask_array.shape[0] and 0 <= int(x) < mask_array.shape[1]:
                     if mask_array[int(y), int(x)] == 1:  # type: ignore
                         selected.add(i)
 
@@ -181,10 +170,7 @@ class AnnotationViewer(QObject):
             return
 
         selected = self.points_layer.selected_data
-        border_colors = [
-            "white" if i in selected else "black"
-            for i in range(len(self.points_layer.data))
-        ]
+        border_colors = ["white" if i in selected else "black" for i in range(len(self.points_layer.data))]
         self.points_layer.border_color = border_colors
 
     def _points_changed(self, event) -> None:
@@ -234,9 +220,7 @@ class AnnotationViewer(QObject):
                 # TODO: replace with _build_cell_payload_from_indices,
                 result = []
                 to_be_removed_indices = list(event.data_indices)
-                to_be_removed_feats = self.points_layer.features.iloc[
-                    to_be_removed_indices
-                ]
+                to_be_removed_feats = self.points_layer.features.iloc[to_be_removed_indices]
                 for idx, row in to_be_removed_feats.iterrows():
                     result.append(Cell(row["id"], -1.0, -1.0, -1.0, "None"))
                 self.point_data_changed.emit("removed", result)
@@ -283,7 +267,8 @@ class AnnotationViewer(QObject):
             current_point_diameter = self.points_layer.features.at[idx, "diameter"]
             new_point_diameter = current_point_diameter + delta * 2
             new_point_diameter = min(
-                self.point_max_rad, max(self.point_min_rad, new_point_diameter)
+                self.point_max_diameter,
+                max(self.point_min_diameter, new_point_diameter),
             )
             self.points_layer.features.at[idx, "diameter"] = new_point_diameter
 
@@ -326,19 +311,13 @@ class AnnotationViewer(QObject):
         self.nav_label.label = label
 
     def connect_to_events(self) -> None:
-        self.points_layer.events.feature_defaults.connect(
-            lambda event: self._update_label_menu(self.label_menu)
-        )
-        self.points_layer.selected_data.events.items_changed.connect(
-            lambda e: self._update_point_borders()
-        )
+        self.points_layer.events.feature_defaults.connect(lambda event: self._update_label_menu(self.label_menu))
+        self.points_layer.selected_data.events.items_changed.connect(lambda e: self._update_point_borders())
         self.points_layer.events.data.connect(self._points_changed)
 
         self.label_menu.changed.connect(self._label_changed)
 
-        self.points_layer.mouse_wheel_callbacks.append(
-            self._on_scroll_change_point_size
-        )
+        self.points_layer.mouse_wheel_callbacks.append(self._on_scroll_change_point_size)
         self.points_layer.events.size.connect(self._on_point_size_changed)
 
         self.brush_layer.events.paint.connect(self._on_brush_mask_change)
@@ -354,8 +333,6 @@ class AnnotationViewer(QObject):
 """
 TODO: replace all complicated signatures to pass data with DTO objects
 TODO: DTO should have serialization functions
-TODO: remove instantiation of layers in init with None to avoid typing problems
-TODO: Change initial point size to somithing close to a cell size
 TODO: Is the point size always in range?
 TODO: Changing the label does not change the default value. Next cell is the old again
 TODO: Point color should be the border and internal opaque. Then selected is just white border

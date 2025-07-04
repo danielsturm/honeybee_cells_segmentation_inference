@@ -25,9 +25,7 @@ class DataLoader:
         return image_paths, label_paths
 
     # TODO: replace the return with AnnotationDTO
-    def load_data(
-        self, image_idx: int
-    ) -> tuple[np.ndarray, str, list[str], np.ndarray, np.ndarray, list[str]]:
+    def load_data(self, image_idx: int) -> tuple[np.ndarray, str, list[str], np.ndarray, np.ndarray, list[str]]:
         image_path = self.image_paths[image_idx]
         image_name = image_path.stem
         image = imread(str(image_path))
