@@ -3,6 +3,7 @@ from data_loader import DataLoader
 from annotation_model import HoneyCombAnnotationData
 from pathlib import Path
 import json
+import argparse
 from utils import setup_logger
 from annotation_model import Cell
 
@@ -87,8 +88,12 @@ class AnnotationController:
 
 
 if __name__ == "__main__":
-    data_dir = Path(
-        r"C:\Users\sturmd\Documents\Development\Privates\honeybee_cells_segmentation_inference\segmentation_restruct\annotator\data\input"
-    )
+    parser = argparse.ArgumentParser(description="Honeycomb Annotation Tool")
+    parser.add_argument("data_dir", type=Path, help="Path to the input data directory")
+    args = parser.parse_args()
+
+    data_dir = args.data_dir
+    if not data_dir.exists():
+        parser.error(f"Provided data_dir {data_dir} does not exist.")
     controller = AnnotationController(data_dir)
     controller.run()

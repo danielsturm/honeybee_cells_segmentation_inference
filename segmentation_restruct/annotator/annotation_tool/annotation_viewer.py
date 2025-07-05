@@ -291,7 +291,7 @@ class AnnotationViewer(QObject):
                     result.append(Cell(row["id"], -1.0, -1.0, -1.0, "None"))
                 self.point_data_changed.emit("removed", result)
             case _:
-                print("unsupported case")
+                self.logger.warning(f"Unsupported event action: {event.action}")
                 return
 
     def _set_feature_default(self, key: str, value) -> None:
@@ -380,6 +380,7 @@ class AnnotationViewer(QObject):
     def _on_change_image_clicked(self, direction: str) -> None:
         unlabeled_cells = self._has_unlabeled_cells()
         if unlabeled_cells:
+            self.logger.warning(f"changed image: {unlabeled_cells} are still unlabeled")
             show_unlabeled_warning(self.viewer, unlabeled_cells)
         self.image_change.emit(direction)
 
@@ -400,6 +401,7 @@ class AnnotationViewer(QObject):
         def custom_close_event(event):
             unlabeled_cells = self._has_unlabeled_cells()
             if unlabeled_cells:
+                self.logger.warning(f"changed image: {unlabeled_cells} are still unlabeled")
                 show_unlabeled_warning(self.viewer, unlabeled_cells)
                 original_close_event(event)
             else:
