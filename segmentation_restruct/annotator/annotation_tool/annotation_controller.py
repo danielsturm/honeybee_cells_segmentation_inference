@@ -31,7 +31,7 @@ class AnnotationController:
 
     def load_new_image(self, image_idx: int) -> None:
         self.data.update_data(*self.loader.load_data(image_idx))
-        self.viewer.update_view(self.data.full_data)
+        self.viewer.update_view(self.data.full_data, self._nav_label_text())
 
     def _export_data(self) -> None:
         # TODO: change to AnnotationDTO everywhere and pass only DTO
@@ -67,13 +67,11 @@ class AnnotationController:
         self._export_data()
         match direction:
             case "next":
-                print("image", direction)
                 if self.image_idx + 1 < self.loader.data_count:
                     self.image_idx += 1
                     self.load_new_image(self.image_idx)
             case "prev":
-                print("image", direction)
-                if self.image_idx - 1 >= self.loader.data_count:
+                if self.image_idx - 1 >= 0:
                     self.image_idx -= 1
                     self.load_new_image(self.image_idx)
             case _:

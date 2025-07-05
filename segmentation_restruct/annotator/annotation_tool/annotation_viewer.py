@@ -1,12 +1,12 @@
 import napari
-from napari.layers import Image
+from napari.layers import Image, Points, Labels
 from napari.layers._data_protocols import LayerDataProtocol
 import logging
 import numpy as np
 import pandas as pd
 import uuid
 from magicgui.widgets import ComboBox, Container, PushButton, Label
-from utils import restrict_brush_layer_tools
+from utils import restrict_brush_layer_tools, show_unlabeled_warning
 from annotation_model import AnnotationDTO, Cell
 from typing import cast
 
@@ -16,6 +16,8 @@ from qtpy.QtCore import QObject, Signal  # type: ignore
 class AnnotationViewer(QObject):
     point_max_diameter = 100
     point_min_diameter = 1
+    point_layer_name = "Cells"
+    brush_layer_name = "BrushLayer"
 
     label_changed = Signal(str, list)
     point_data_changed = Signal(str, list)
@@ -33,6 +35,7 @@ class AnnotationViewer(QObject):
         self.viewer = napari.Viewer()
         self.label_menu = self._create_label_menu()
         self.nav_buttons = self._create_navigation_buttons()
+        self._prevent_close_if_unlabeled()
 
     def register_layers(self, data: AnnotationDTO, button_label: str) -> None:
         # image layer
@@ -45,22 +48,27 @@ class AnnotationViewer(QObject):
             face_color="cell_type",
             face_color_cycle=self.label_map,
             size=data.point_diameters,  # type: ignore
-            name="Cells",
+            name=self.point_layer_name,
         )
         points_layer.face_color_mode = "cycle"
         self.points_layer = points_layer
-        self._set_init_point_size()
+        self._set_init_point_params()
+        self._update_feature_defaults_with_label()
         self._update_feature_defaults_with_uuid()
         self._update_feature_defaults_with_point_size()
         self._update_point_borders()
         self.update_button_label(button_label)
 
         # brush layer
-        self.brush_layer = self.viewer.add_labels(np.zeros(data.image.shape[:2], dtype=np.uint8), name="BrushMask")
+        self.brush_layer = self.viewer.add_labels(
+            np.zeros(data.image.shape[:2], dtype=np.uint8), name=self.brush_layer_name
+        )
         self._set_custom_brush_limit()
         restrict_brush_layer_tools(self.viewer, self.brush_layer, self.points_layer)
 
-    def update_view(self, data: AnnotationDTO) -> None:
+        self._setup_key_bindings()
+
+    def update_view(self, data: AnnotationDTO, button_label: str) -> None:
         # image layer
         self._remove_old_image_layer()
         self.viewer.add_image(data.image, name=data.image_name)
@@ -74,6 +82,24 @@ class AnnotationViewer(QObject):
         # brush layer
         new_data = np.zeros(data.image.shape[:2], dtype=np.uint8)
         self.brush_layer.data = cast(LayerDataProtocol, new_data)
+
+        self._restore_layer_order()
+        self.update_button_label(button_label)
+        self._set_active_layer()
+
+    def _set_active_layer(self) -> None:
+        self.viewer.layers.selection.active = self.brush_layer
+
+    def _restore_layer_order(self) -> None:
+        layers = self.viewer.layers
+
+        image_layer = next(layer for layer in layers if isinstance(layer, Image))
+        points_layer = next(layer for layer in layers if isinstance(layer, Points))
+        labels_layer = next(layer for layer in layers if isinstance(layer, Labels))
+
+        layers.move(layers.index(image_layer), 0)
+        layers.move(layers.index(points_layer), 1)
+        layers.move(layers.index(labels_layer), len(layers) - 1)
 
     def _remove_old_image_layer(self) -> None:
         for layer in list(self.viewer.layers):
@@ -98,8 +124,32 @@ class AnnotationViewer(QObject):
             }
         )
 
-    def _set_init_point_size(self, init_size: int = 46) -> None:
-        self.points_layer.current_size = init_size
+    def _set_init_point_params(self, init_point_size: int = 46, init_opacity: float = 0.5) -> None:
+        self.points_layer.current_size = init_point_size
+        self.points_layer.opacity = init_opacity
+
+    def _setup_key_bindings(self) -> None:
+        @self.viewer.bind_key("b")
+        def activate_brush_layer(viewer):
+            # Set brush layer as active
+            self.viewer.layers.selection.active = self.brush_layer
+            self.logger.info("Activated brush layer by key bind")
+
+        @self.viewer.bind_key("c")
+        def activate_points_layer(viewer):
+            # Set points layer as active
+            self.viewer.layers.selection.active = self.points_layer
+            self.logger.info("Activated points layer by key bind")
+
+        @self.viewer.bind_key("y")
+        def points_opacity_to_zero(viewer):
+            self.points_layer.opacity = 0.0
+            self.logger.info("Set points layer opacity to 0.")
+
+        @self.viewer.bind_key("x")
+        def points_opacity_to_full(viewer):
+            self.points_layer.opacity = 1.0
+            self.logger.info("Set points layer opacity to 1.")
 
     def _set_custom_brush_limit(self, max_size: int = 150) -> None:
         self.viewer.window._qt_viewer.controls.widgets[self.brush_layer].brushSizeSlider.setMaximum(max_size)
@@ -123,13 +173,30 @@ class AnnotationViewer(QObject):
             self.brush_layer.events.paint.disconnect(self._on_brush_mask_change)
             new_data = np.zeros_like(self.brush_layer.data)
             self.brush_layer.data = cast(LayerDataProtocol, new_data)
-            # self.brush_layer.data = np.zeros_like(self.brush_layer.data)
             self.brush_layer.events.paint.connect(self._on_brush_mask_change)
 
     def _on_active_layer_change(self, event):
-        if self.viewer.layers.selection.active == self.brush_layer:
+        active = self.viewer.layers.selection.active
+        if active == self.brush_layer:
             self.brush_layer.mode = "paint"
             self.brush_layer.brush_size = 70
+        if active == self.points_layer:
+            self.points_layer.mode = "select"
+
+    def _focus_canvas_if_new_layer_selected(self, event=None):
+        """This exists only to handle the 'bug' that a user could accidentially delete an
+        entire layer. Can happen especially when selecting by brush, changing to points layer
+        and hitting delete key. See also https://github.com/napari/napari/issues/7448"""
+        # could be combined with _on_active_layer_change()
+        active = self.viewer.layers.selection.active
+        if active is None:
+            return
+
+        if isinstance(active, (Image, Points, Labels)):
+            qt_viewer = self.viewer.window._qt_viewer
+            qt_canvas_widget = qt_viewer.canvas.native
+            if qt_canvas_widget is not None:
+                qt_canvas_widget.setFocus()
 
     def _create_label_menu(self) -> ComboBox:
         label_menu = ComboBox(label="cell_type", choices=self.label_categories)
@@ -148,11 +215,8 @@ class AnnotationViewer(QObject):
 
     def _label_changed(self, selected_label: str) -> None:
         selected_points = list(self.points_layer.selected_data)
-        if not selected_points:
-            feature_defaults = self.points_layer.feature_defaults
-            feature_defaults["cell_type"] = selected_label
-            self.points_layer.feature_defaults = feature_defaults
-        else:
+
+        if selected_points:
             self._update_points_label(selected_label, selected_points)
 
             updated_cells = self._build_cell_payload_from_indices(selected_points)
@@ -160,6 +224,8 @@ class AnnotationViewer(QObject):
                 cell.label = selected_label
 
             self.label_changed.emit(selected_label, updated_cells)
+
+        self._update_feature_defaults_with_label(selected_label)
 
     def _update_points_label(self, selected_label: str, selected_points: list[int]):
         self.points_layer.features.loc[selected_points, "cell_type"] = selected_label
@@ -228,15 +294,19 @@ class AnnotationViewer(QObject):
                 print("unsupported case")
                 return
 
-    def _update_feature_defaults_with_uuid(self) -> None:
+    def _set_feature_default(self, key: str, value) -> None:
         defaults = self.points_layer.feature_defaults
-        defaults["id"] = str(uuid.uuid4())
+        defaults[key] = value
         self.points_layer.feature_defaults = defaults
 
+    def _update_feature_defaults_with_label(self, label: str = "unlabeled") -> None:
+        self._set_feature_default("cell_type", label)
+
+    def _update_feature_defaults_with_uuid(self) -> None:
+        self._set_feature_default("id", str(uuid.uuid4()))
+
     def _update_feature_defaults_with_point_size(self) -> None:
-        defaults = self.points_layer.feature_defaults
-        defaults["diameter"] = self.points_layer.current_size
-        self.points_layer.feature_defaults = defaults
+        self._set_feature_default("diameter", self.points_layer.current_size)
 
     def _build_cell_payload_from_indices(self, indices: list[int]) -> list[Cell]:
         result = []
@@ -272,9 +342,9 @@ class AnnotationViewer(QObject):
             )
             self.points_layer.features.at[idx, "diameter"] = new_point_diameter
 
-        self.points_layer.size = self.points_layer.features["diameter"].values
+        self.points_layer.size = self.points_layer.features["diameter"].values  # type: ignore
 
-        self.points_layer.selected_data = set(selected)
+        self.points_layer.selected_data = set(selected)  # type: ignore
 
         self._update_feature_defaults_with_point_size()
         result = self._build_cell_payload_from_indices(selected)
@@ -307,8 +377,35 @@ class AnnotationViewer(QObject):
         self.viewer.window.add_dock_widget(button_container, area="left")
         return button_container
 
+    def _on_change_image_clicked(self, direction: str) -> None:
+        unlabeled_cells = self._has_unlabeled_cells()
+        if unlabeled_cells:
+            show_unlabeled_warning(self.viewer, unlabeled_cells)
+        self.image_change.emit(direction)
+
     def update_button_label(self, label: str) -> None:
         self.nav_label.label = label
+
+    def _has_unlabeled_cells(self) -> int:
+        # should live in the controller actually and call model.
+        if self.points_layer is None:
+            return 0
+        count = (self.points_layer.features["cell_type"] == "unlabeled").sum()
+        return int(count)
+
+    def _prevent_close_if_unlabeled(self) -> None:
+        qt_window = self.viewer.window._qt_window
+        original_close_event = qt_window.closeEvent
+
+        def custom_close_event(event):
+            unlabeled_cells = self._has_unlabeled_cells()
+            if unlabeled_cells:
+                show_unlabeled_warning(self.viewer, unlabeled_cells)
+                original_close_event(event)
+            else:
+                original_close_event(event)
+
+        qt_window.closeEvent = custom_close_event
 
     def connect_to_events(self) -> None:
         self.points_layer.events.feature_defaults.connect(lambda event: self._update_label_menu(self.label_menu))
@@ -322,9 +419,10 @@ class AnnotationViewer(QObject):
 
         self.brush_layer.events.paint.connect(self._on_brush_mask_change)
         self.viewer.layers.selection.events.active.connect(self._on_active_layer_change)
+        self.viewer.layers.selection.events.active.connect(self._focus_canvas_if_new_layer_selected)
 
-        self.prev_button.clicked.connect(lambda: self.image_change.emit("prev"))
-        self.next_button.clicked.connect(lambda: self.image_change.emit("next"))
+        self.prev_button.clicked.connect(lambda: self._on_change_image_clicked("prev"))
+        self.next_button.clicked.connect(lambda: self._on_change_image_clicked("next"))
 
     def run(self) -> None:
         napari.run()
@@ -334,7 +432,7 @@ class AnnotationViewer(QObject):
 TODO: replace all complicated signatures to pass data with DTO objects
 TODO: DTO should have serialization functions
 TODO: Is the point size always in range?
-TODO: Changing the label does not change the default value. Next cell is the old again
 TODO: Point color should be the border and internal opaque. Then selected is just white border
-TODO: Tooltips with information about label
+TODO: key binding to delete points even when brush mask is activated
+TODO: argparse cli to start things up
 """

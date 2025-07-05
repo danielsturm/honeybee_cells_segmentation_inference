@@ -1,4 +1,4 @@
-from qtpy.QtWidgets import QWidget, QLabel, QLayoutItem, QPushButton
+from qtpy.QtWidgets import QWidget, QLabel, QLayoutItem, QPushButton, QMessageBox
 from qtpy.QtCore import QTimer
 from napari import Viewer
 from napari.layers import Points, Labels, Layer
@@ -29,9 +29,7 @@ def setup_logger(log_dir: Path = Path("."), level=logging.DEBUG) -> logging.Logg
             sys.__excepthook__(exc_type, exc_value, exc_traceback)
             return
 
-        logger.critical(
-            "Uncaught exception", exc_info=(exc_type, exc_value, exc_traceback)
-        )
+        logger.critical("Uncaught exception", exc_info=(exc_type, exc_value, exc_traceback))
 
     sys.excepthook = handle_uncaught_exception
 
@@ -46,9 +44,7 @@ change.
 See also here: https://forum.image.sc/t/disable-buttons-on-shapes-layer/55243/3"""
 
 
-def restrict_brush_layer_tools(
-    viewer: Viewer, brush_layer: Labels, points_layer: Points
-):
+def restrict_brush_layer_tools(viewer: Viewer, brush_layer: Labels, points_layer: Points):
     hide_brush_controls = partial(
         hide_unwanted_layer_controls,
         allowed_labels={"opacity", "brush size", "label"},
@@ -66,9 +62,7 @@ def restrict_brush_layer_tools(
     QTimer.singleShot(300, lambda: hide_layerlist_buttons(viewer))
 
 
-def hide_unwanted_layer_controls(
-    viewer: Viewer, layer: Layer, allowed_labels: set[str]
-):
+def hide_unwanted_layer_controls(viewer: Viewer, layer: Layer, allowed_labels: set[str]):
     qt_controls = viewer.window._qt_viewer.controls
     layer_controls = qt_controls.widgets.get(layer)
 
@@ -145,3 +139,14 @@ def hide_layerlist_buttons(viewer: Viewer):
         if pattern.match(tooltip):
             logging.debug(f"Hiding button with tooltip: {tooltip}")
             btn.hide()
+
+
+def show_unlabeled_warning(viewer: Viewer, unlabeled_cells_num: int):
+    msg_box = QMessageBox(viewer.window._qt_window)
+    msg_box.setIcon(QMessageBox.Warning)
+    msg_box.setWindowTitle("Unlabeled Cells Remaining")
+    msg_box.setText(
+        f"There are still {unlabeled_cells_num} cells labeled as 'unlabeled'. \nCells that are not labeled are treated as background in mask."
+    )
+    msg_box.setStandardButtons(QMessageBox.Ok)
+    msg_box.exec_()
