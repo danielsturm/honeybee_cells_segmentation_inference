@@ -1,5 +1,6 @@
 from pathlib import Path
 import cv2
+from numpy.typing import NDArray
 import json
 import uuid
 import numpy as np
@@ -22,8 +23,13 @@ class CellFinder:
         self.image_paths = self._find_images()
 
     def run_with_template_matching(self, threshold: float = 0.725, scale_factor: float = 0.425) -> None:
-        template_folder = Path(r"C:\Users\sturmd\Desktop\Bachelorarbeit\pattern_matching")
-        self.run("template_matching", template_folder=template_folder, threshold=threshold, scale_factor=scale_factor)
+        template_folder = Path(__file__).parent / "pattern_matching"
+        results = self.run(
+            "template_matching", template_folder=template_folder, threshold=threshold, scale_factor=scale_factor
+        )
+        for result in results.values():
+            path, _, _, _, matches = result
+            self._save_cells_to_json(matches, path)
 
     def run_with_hough_transform(
         self,
@@ -34,7 +40,7 @@ class CellFinder:
         min_radius: int = 5,
         max_radius: int = 50,
     ) -> None:
-        self.run(
+        results = self.run(
             method="circle_hough_transform",
             dp=dp,
             min_dist=min_dist,
@@ -43,44 +49,69 @@ class CellFinder:
             min_radius=min_radius,
             max_radius=max_radius,
         )
+        for result in results.values():
+            path, _, _, _, matches = result
+            self._save_cells_to_json(matches, path)
 
-    # def run(self, method: str = "template_matching", **method_kwargs) -> None:
-    #     detection_fn = self._get_detection_function(method)
+    def run_hybrid_detection(self, allowed_overlap: float = 0.05):
+        template_folder = Path(__file__).parent / "pattern_matching"
+        tmpl_results = self.run(method="template_matching", template_folder=template_folder)
+        cht_results = self.run(method="circle_hough_transform", min_dist=30, dp=1.5, max_radius=32, min_radius=18)
 
-    #     if not self.image_paths:
-    #         print("No images found to process.")
-    #         return
+        for img_name in tmpl_results:
+            start_time = time.time()
+            tmpl_data = tmpl_results[img_name]
+            cht_data = cht_results.get(img_name)
 
-    #     for img_path in self.image_paths:
-    #         gray_image, _ = self._load_image_and_prepare(img_path)
-    #         matches = detection_fn(gray_image, **method_kwargs)
-    #         filtered_matches = self._non_max_suppression(matches)
-    #         self._save_cells_to_json(filtered_matches, img_path)
+            if cht_data is None:
+                continue
 
-    def run(self, method: str = "template_matching", max_workers: int = 4, **method_kwargs) -> None:
+            tmpl_img_path, _, tmpl_num_cells, color_image, tmpl_matches = tmpl_data
+            _, _, cht_num_cells, _, cht_matches = cht_data
+
+            combined = list(tmpl_matches)
+            for x_c, y_c, r_c, s_c in cht_matches:
+                if all(
+                    np.hypot(x_c - x_t, y_c - y_t) > ((r_c + r_t) * (1 - allowed_overlap))
+                    for x_t, y_t, r_t, s_t in tmpl_matches
+                ):
+                    combined.append((x_c, y_c, r_c, s_c))
+
+            end_time = time.time() - start_time
+            print(
+                f"took {end_time:.2f} sec to compare cht cell against templ cells in {img_name}. finally {len(combined)} cells"
+            )
+            show_cells_on_image(color_image, combined)
+            self._save_cells_to_json(combined, tmpl_img_path)
+
+    def run(self, method: str = "template_matching", max_workers: int = 4, **method_kwargs) -> dict[str, tuple]:
         detection_fn, supression_fn = self._get_detection_function(method)
 
         if not self.image_paths:
             print("No images found to process.")
-            return
+            return {}
 
-        def process_image(img_path: Path):
+        def process_image(img_path: Path) -> tuple[Path, float, int, NDArray, list[tuple]]:
             start_time = time.time()
             gray_image, color_image = self._load_image_and_prepare(img_path)
+            gray_image = self._apply_clahe(gray_image)
             matches = detection_fn(gray_image, **method_kwargs)
-            filtered_matches = supression_fn(matches)
-            self._save_cells_to_json(filtered_matches, img_path)
+            if supression_fn:
+                matches = supression_fn(matches)
             duration = time.time() - start_time
-            return img_path.name, duration, len(filtered_matches), color_image, filtered_matches
+            return img_path, duration, len(matches), color_image, matches
 
+        combined_results = {}
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = [executor.submit(process_image, img_path) for img_path in self.image_paths]
 
             for future in tqdm(as_completed(futures), total=len(futures), desc=f"Running {method}"):
-                img_name, duration, num_cells, color_image, filtered_matches = future.result()
-                tqdm.write(f"Processed {img_name} in {duration:.2f}s - found {num_cells} cells")
+                img_path, duration, num_cells, color_image, matches = future.result()
+                combined_results[img_path.name] = (img_path, duration, num_cells, color_image, matches)
+                tqdm.write(f"Processed {img_path.name} in {duration:.2f}s - found {num_cells} cells")
 
-                show_cells_on_image(color_image, filtered_matches)
+                show_cells_on_image(color_image, matches)  # only for testing
+        return combined_results
 
     def _get_detection_function(self, method: str) -> tuple[Callable, Callable]:
         match method:
@@ -144,19 +175,22 @@ class CellFinder:
         )
         results = []
         if detected_circles is not None and len(detected_circles) > 0:
-            detected_circles = np.around(detected_circles[0, :]).astype(np.uint16)
+            detected_circles = np.around(detected_circles[0, :]).astype(int)
             for x, y, r in detected_circles:
-                results.append((x, y, r, 1.0))  # Score is placeholder for Hough
+                results.append((x, y, r, 1.0))  # 1.0 is just a dummy score
 
         return results
 
-    def _nms_circles(self, matches, min_dist=20):
+    def _nms_circles(self, matches, min_dist=20, radius_tolerance=0.3, exp_radius=24, allowed_overlap_ratio=0.075):
         if len(matches) == 0:
             return []
-        # Sort by score descending (if available), here always 1.0 for Hough
-        matches = sorted(matches, key=lambda x: x[3], reverse=True)
+        filtered_by_size = [
+            m for m in matches if exp_radius * (1 - radius_tolerance) <= m[2] <= exp_radius * (1 + radius_tolerance)
+        ]
+        # sorted_by_confidence = sorted(filtered_by_size, key=lambda x: x[3], reverse=True) # cht has no conf score
+        min_dist = exp_radius * 2 * (1 - allowed_overlap_ratio)
         kept = []
-        for x, y, r, s in matches:
+        for x, y, r, s in filtered_by_size:
             if all(np.hypot(x - xk, y - yk) >= min_dist for xk, yk, _, _ in kept):
                 kept.append((x, y, r, s))
         return kept
@@ -196,12 +230,20 @@ class CellFinder:
 
         return [matches[i] for i in keep]
 
+    def _apply_clahe(self, img, clipLimit=2.0, tileGridSize=(8, 8)):
+
+        if img.dtype in [np.float32, np.float64]:
+            img = (img * 255).clip(0, 255).astype(np.uint8)
+
+        clahe = cv2.createCLAHE(clipLimit=clipLimit, tileGridSize=tileGridSize)
+        return clahe.apply(img)
+
     def _find_images(self) -> list[Path]:
         """TODO: This needs to be extended in order to find only
         background images. see background_img_annotator.py"""
         return sorted(self.input_dir.glob("*.png"))
 
-    def _load_image_and_prepare(self, path: Path):
+    def _load_image_and_prepare(self, path: Path) -> tuple[NDArray, NDArray]:
         gray = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
         color = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
         return gray, color
@@ -225,7 +267,7 @@ class CellFinder:
 def main():
     parser = argparse.ArgumentParser(description="Run CellFinder with a chosen detection method.")
     parser.add_argument(
-        "method", choices=["template_matching", "circle_hough_transform"], help="Detection method to use."
+        "method", choices=["template_matching", "circle_hough_transform", "hybrid"], help="Detection method to use."
     )
     parser.add_argument("input_path", type=str, help="Path to input image directory.")
     parser.add_argument(
@@ -241,7 +283,10 @@ def main():
     if args.method == "template_matching":
         cell_finder.run_with_template_matching()
     elif args.method == "circle_hough_transform":
-        cell_finder.run_with_hough_transform(min_dist=40, param2=35)
+        cell_finder.run_with_hough_transform(min_dist=30, dp=1.5, max_radius=32, min_radius=18)
+        # cell_finder.run_with_hough_transform(min_dist=40, param2=35, max_radius=30, min_radius=20) okaye performace
+    elif args.method == "hybrid":
+        cell_finder.run_hybrid_detection()
 
 
 if __name__ == "__main__":
