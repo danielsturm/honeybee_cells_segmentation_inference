@@ -11,7 +11,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from tqdm import tqdm
 import argparse
 
-from segmentation_restruct.annotator.cell_finder.utils import show_cells_on_image
+from segmentation_restruct.annotator.cell_finder.utils import save_cell_find_config_to_json
 
 
 class CellFinder:
@@ -30,6 +30,10 @@ class CellFinder:
         for result in results.values():
             path, _, _, _, matches = result
             self._save_cells_to_json(matches, path)
+
+        save_cell_find_config_to_json(
+            self.output_path, method="pattern matching", threshold=threshold, scale_factor=scale_factor
+        )
 
     def run_with_hough_transform(
         self,
@@ -52,6 +56,17 @@ class CellFinder:
         for result in results.values():
             path, _, _, _, matches = result
             self._save_cells_to_json(matches, path)
+
+        save_cell_find_config_to_json(
+            self.output_path,
+            method="circle hough transform",
+            dp=dp,
+            min_dist=min_dist,
+            param1=param1,
+            param2=param2,
+            min_radius=min_radius,
+            max_radius=max_radius,
+        )
 
     def run_hybrid_detection(self, allowed_overlap: float = 0.05):
         template_folder = Path(__file__).parent / "pattern_matching"
@@ -81,7 +96,7 @@ class CellFinder:
             print(
                 f"took {end_time:.2f} sec to compare cht cell against templ cells in {img_name}. finally {len(combined)} cells"
             )
-            show_cells_on_image(color_image, combined)
+            # show_cells_on_image(color_image, combined)
             self._save_cells_to_json(combined, tmpl_img_path)
 
     def run(self, method: str = "template_matching", max_workers: int = 4, **method_kwargs) -> dict[str, tuple]:
@@ -110,7 +125,7 @@ class CellFinder:
                 combined_results[img_path.name] = (img_path, duration, num_cells, color_image, matches)
                 tqdm.write(f"Processed {img_path.name} in {duration:.2f}s - found {num_cells} cells")
 
-                show_cells_on_image(color_image, matches)  # only for testing
+                # show_cells_on_image(color_image, matches)  # only for testing
         return combined_results
 
     def _get_detection_function(self, method: str) -> tuple[Callable, Callable]:
