@@ -1,5 +1,6 @@
 import cv2
 import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
 from datetime import datetime
 import json
 from pathlib import Path
@@ -22,6 +23,69 @@ def plot_image(image, num_cells):
 def show_cells_on_image(color_image, found_cells):
     cells_on_image = draw_detected_cells(color_image, found_cells)
     plot_image(cells_on_image, len(found_cells))
+
+
+def visualize_hex_lattice_graph(graph, candidates=None, validated=None, max_nodes=300, figsize=(12, 12)):
+    fig, ax = plt.subplots(figsize=figsize)
+
+    # Draw nodes
+    node_ids = list(graph.nodes.keys())  # [:max_nodes]
+    for node_id in node_ids:
+        node = graph.nodes[node_id]
+        x, y = node.position
+        ax.plot(x, y, "o", color="black", markersize=4)
+
+        for dir_idx, neighbor in node.neighbors.items():
+            if neighbor is None:
+                # draw missing neighbor indicator
+                vec = (graph.vecs + [-v for v in graph.vecs])[dir_idx]
+                end = node.position + vec
+                ax.plot([x, end[0]], [y, end[1]], linestyle="dotted", color="gray", alpha=0.3)
+            elif neighbor == "OUT_OF_BOUNDS":
+                vec = (graph.vecs + [-v for v in graph.vecs])[dir_idx]
+                end = node.position + vec
+                ax.plot([x, end[0]], [y, end[1]], linestyle="dashed", color="red", alpha=0.5)
+            else:
+                # draw real connection
+                if neighbor in graph.nodes:
+                    neighbor_node = graph.nodes[neighbor]
+                    nx, ny = neighbor_node.position
+                    ax.plot([x, nx], [y, ny], color="blue", linewidth=1, alpha=0.7)
+
+    # --- Visualize predicted candidate cells ---
+    # if candidates is not None:
+    #     for pos, _, _ in candidates:
+    #         ax.plot(pos[0], pos[1], "rx", markersize=5)  # Red 'x' for missing neighbor
+    if candidates is not None:
+        for pos, _, _, method in candidates:
+            if method == "curve":
+                ax.plot(pos[0], pos[1], marker="x", color="green", markersize=5)
+            else:
+                ax.plot(pos[0], pos[1], marker="x", color="red", markersize=5)
+
+    # --- Visualize validated aggregated predictions ---
+    if validated is not None:
+        for final_pos, support in validated:
+            ax.plot(final_pos[0], final_pos[1], marker="*", color="orange", markersize=5)
+
+    ax.set_aspect("equal")
+    ax.set_title("Hex Lattice Graph Visualization")
+    ax.invert_yaxis()  # for image-like top-down view
+
+    # Add legend
+    legend_items = [
+        mpatches.Patch(color="blue", label="Connected neighbors"),
+        mpatches.Patch(color="red", label="Out of bounds (dashed)"),
+        mpatches.Patch(color="gray", label="Missing (dotted)"),
+        mpatches.Patch(color="green", label="Predicted (curve)"),
+        mpatches.Patch(color="red", label="Predicted (lattice)"),
+        mpatches.Patch(color="orange", label="Validated (clustered)"),
+    ]
+    ax.legend(handles=legend_items)
+
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.show()
 
 
 def save_html_performance_report(results, config, output_dir: Path, timestamped=True):

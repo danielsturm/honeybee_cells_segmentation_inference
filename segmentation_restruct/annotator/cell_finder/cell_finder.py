@@ -11,7 +11,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from tqdm import tqdm
 import argparse
 
-from segmentation_restruct.annotator.cell_finder.utils import save_cell_find_config_to_json
+from segmentation_restruct.annotator.cell_finder.utils import save_cell_find_config_to_json, show_cells_on_image
+from segmentation_restruct.annotator.cell_finder.hex_graph_builder import HexLatticeGraph
 
 
 class CellFinder:
@@ -22,17 +23,10 @@ class CellFinder:
         assert self.output_path.is_dir(), "output path does not exist"
         self.image_paths = self._find_images()
 
-    def run_with_template_matching(self, threshold: float = 0.725, scale_factor: float = 0.425) -> None:
+    def run_with_template_matching(self, threshold: float = 0.725, scale_factor: float = 0.425):
         template_folder = Path(__file__).parent / "pattern_matching"
-        results = self.run(
+        return self.run(
             "template_matching", template_folder=template_folder, threshold=threshold, scale_factor=scale_factor
-        )
-        for result in results.values():
-            path, _, _, _, matches = result
-            self._save_cells_to_json(matches, path)
-
-        save_cell_find_config_to_json(
-            self.output_path, method="pattern matching", threshold=threshold, scale_factor=scale_factor
         )
 
     def run_with_hough_transform(
@@ -43,8 +37,8 @@ class CellFinder:
         param2: float = 30,
         min_radius: int = 5,
         max_radius: int = 50,
-    ) -> None:
-        results = self.run(
+    ):
+        return self.run(
             method="circle_hough_transform",
             dp=dp,
             min_dist=min_dist,
@@ -53,19 +47,24 @@ class CellFinder:
             min_radius=min_radius,
             max_radius=max_radius,
         )
-        for result in results.values():
-            path, _, _, _, matches = result
-            self._save_cells_to_json(matches, path)
 
-        save_cell_find_config_to_json(
-            self.output_path,
-            method="circle hough transform",
-            dp=dp,
-            min_dist=min_dist,
-            param1=param1,
-            param2=param2,
-            min_radius=min_radius,
-            max_radius=max_radius,
+    def run_with_gen_hough_transform(
+        self,
+        min_angle: float = 0,
+        max_angle: float = 360,
+        angle_step: float = 1,
+        min_scale: float = 0.9,
+        max_scale: float = 1.1,
+        scale_step: float = 0.05,
+    ):
+        return self.run(
+            method="generalized_hough_transform",
+            min_angle=min_angle,
+            max_angle=max_angle,
+            angle_step=angle_step,
+            min_scale=min_scale,
+            max_scale=max_scale,
+            scale_step=scale_step,
         )
 
     def run_hybrid_detection(self, allowed_overlap: float = 0.05):
@@ -99,7 +98,10 @@ class CellFinder:
             # show_cells_on_image(color_image, combined)
             self._save_cells_to_json(combined, tmpl_img_path)
 
-    def run(self, method: str = "template_matching", max_workers: int = 4, **method_kwargs) -> dict[str, tuple]:
+    def run(
+        self, method: str = "template_matching", max_workers: int = 4, **method_kwargs
+    ) -> dict[str, tuple[Path, float, int, NDArray, list[tuple]]]:
+
         detection_fn, supression_fn = self._get_detection_function(method)
 
         if not self.image_paths:
@@ -134,6 +136,8 @@ class CellFinder:
                 return self._template_matching, self._non_max_suppression
             case "circle_hough_transform":
                 return self._circle_hough_transform, self._nms_circles
+            case "generalized_hough_transform":
+                return self._generalized_hough_transform, self._nms_circles
             case _:
                 raise ValueError(
                     f"Detection method '{method}' is not supported. "
@@ -195,6 +199,62 @@ class CellFinder:
                 results.append((x, y, r, 1.0))  # 1.0 is just a dummy score
 
         return results
+
+    def _generalized_hough_transform(
+        self,
+        gray_image: np.ndarray,
+        min_angle: float = 0,
+        max_angle: float = 360,
+        angle_step: float = 1,
+        min_scale: float = 0.9,
+        max_scale: float = 1.1,
+        scale_step: float = 0.05,
+    ) -> list[tuple[int, int, int, float]]:
+        """
+        Apply OpenCV's Generalized Hough Transform using a synthetic hexagonal template.
+        """
+        template = self.generate_hexagon_template()
+
+        ght = cv2.createGeneralizedHoughGuil()
+        ght.setTemplate(template)
+
+        ght.setMinAngle(min_angle)
+        ght.setMaxAngle(max_angle)
+        ght.setAngleStep(angle_step)
+        ght.setMinScale(min_scale)
+        ght.setMaxScale(max_scale)
+        ght.setScaleStep(scale_step)
+
+        ght.setCannyLowThresh(50)
+        ght.setCannyHighThresh(150)
+
+        positions, votes = ght.detect(gray_image)
+        if positions is None:
+            return []
+
+        results = []
+        for (x, y, scale, angle), vote in zip(positions, votes):
+            radius = int(24 * scale)
+            results.append((int(x), int(y), radius, float(vote)))
+
+        return results
+
+    def generate_hexagon_template(self, radius: int = 24, margin: int = 20) -> np.ndarray:
+
+        size = 2 * (radius + margin)
+        center = (size // 2, size // 2)
+
+        angles = np.linspace(0, 2 * np.pi, 7)[:-1]
+        points = np.array(
+            [(int(center[0] + radius * np.cos(angle)), int(center[1] + radius * np.sin(angle))) for angle in angles],
+            dtype=np.int32,
+        )
+        points = points.reshape((-1, 1, 2))
+        points_list = [points]
+
+        img = np.zeros((size, size), dtype=np.uint8)
+        cv2.polylines(img, points_list, isClosed=True, color=255, thickness=2)
+        return img
 
     def _nms_circles(self, matches, min_dist=20, radius_tolerance=0.3, exp_radius=24, allowed_overlap_ratio=0.075):
         if len(matches) == 0:
@@ -263,6 +323,13 @@ class CellFinder:
         color = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
         return gray, color
 
+    def save_artifacts(self, method: str, results: dict, parameters: dict):
+        for result in results.values():
+            path, _, _, _, matches = result
+            self._save_cells_to_json(matches, path)
+
+        save_cell_find_config_to_json(self.output_path, method=method, **parameters)
+
     def _save_cells_to_json(self, results, file_path: Path):
         cell_data = [
             {
@@ -282,7 +349,15 @@ class CellFinder:
 def main():
     parser = argparse.ArgumentParser(description="Run CellFinder with a chosen detection method.")
     parser.add_argument(
-        "method", choices=["template_matching", "circle_hough_transform", "hybrid"], help="Detection method to use."
+        "method",
+        choices=[
+            "template_matching",
+            "circle_hough_transform",
+            "hybrid",
+            "generalized_hough_transform",
+            "graph_building",
+        ],
+        help="Detection method to use.",
     )
     parser.add_argument("input_path", type=str, help="Path to input image directory.")
     parser.add_argument(
@@ -296,12 +371,56 @@ def main():
     cell_finder = CellFinder(input_dir=input_path, output_path=output_path)
 
     if args.method == "template_matching":
-        cell_finder.run_with_template_matching()
+        threshold = 0.725
+        scale_factor = 0.425
+        parameters = {"threshold": threshold, "scale_factor": scale_factor}
+        results = cell_finder.run_with_template_matching(threshold=threshold, scale_factor=scale_factor)
+        cell_finder.save_artifacts(method="pattern matching", results=results, parameters=parameters)
+
     elif args.method == "circle_hough_transform":
-        cell_finder.run_with_hough_transform(min_dist=30, dp=1.5, max_radius=32, min_radius=18)
+        parameters = {"dp": 1.5, "min_dist": 30, "param1": 50, "param2": 30, "max_radius": 32, "min_radius": 18}
+        results = cell_finder.run_with_hough_transform(min_dist=30, dp=1.5, max_radius=32, min_radius=18)
         # cell_finder.run_with_hough_transform(min_dist=40, param2=35, max_radius=30, min_radius=20) okaye performace
+        cell_finder.save_artifacts(method="circle hough transform", results=results, parameters=parameters)
+
     elif args.method == "hybrid":
         cell_finder.run_hybrid_detection()
+
+    elif args.method == "generalized_hough_transform":
+        parameters = {
+            "min_angle": 0,
+            "max_angle": 360,
+            "angle_step": 4,
+            "min_scale": 0.85,
+            "max_scale": 1.2,
+            "scale_step": 0.025,
+        }
+        results = cell_finder.run_with_gen_hough_transform(
+            min_scale=0.85, max_scale=1.2, scale_step=0.025, min_angle=0, max_angle=360, angle_step=4
+        )
+        cell_finder.save_artifacts(method=args.method, results=results, parameters=parameters)
+
+    elif args.method == "graph_building":
+        threshold = 0.725
+        scale_factor = 0.425
+        parameters = {"threshold": threshold, "scale_factor": scale_factor}
+        results = cell_finder.run_with_template_matching(threshold=threshold, scale_factor=scale_factor)
+        for img_name, data in results.items():
+            path, duration, num, color_img, matches = data
+            seed_points = np.array([(x, y) for x, y, _, _ in matches])
+            lattice_vectors = HexLatticeGraph.estimate_lattice_vectors_by_angle_clustering(seed_points)
+            graph = HexLatticeGraph(
+                seed_points=seed_points,
+                lattice_vectors=lattice_vectors,
+                tolerance=17.0,
+                image_size=tuple(reversed(color_img.shape[:2])),
+                bidirectional=False,
+            )
+            graph.grow_graph_iteratively(n_iterations=3)
+            results[img_name] = (path, duration, num, color_img, graph.cell_positions)
+            show_cells_on_image(color_img, graph.cell_positions)
+
+        cell_finder.save_artifacts(method="pattern matching", results=results, parameters=parameters)
 
 
 if __name__ == "__main__":
