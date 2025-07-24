@@ -115,27 +115,6 @@ class HexLatticeGraph:
         width, height = self.image_size
         return 0 <= x < width and 0 <= y < height
 
-    def _vector_direction_index(self, direction, angle_tol_deg=20):
-        """
-        Match a direction vector to one of the 6 canonical lattice directions.
-        Returns index 0–5 or None.
-        """
-        norm = np.linalg.norm(direction)
-        if norm == 0:
-            return None
-        direction_unit = direction / norm
-
-        lattice_dirs = self.vecs + [-v for v in self.vecs]  # directions 0–5
-        lattice_dirs = [v / np.linalg.norm(v) for v in lattice_dirs]
-
-        cos_angles = [np.dot(direction_unit, d) for d in lattice_dirs]
-        best_idx = np.argmax(cos_angles)
-        angle_diff = np.degrees(np.arccos(np.clip(cos_angles[best_idx], -1.0, 1.0)))
-
-        if angle_diff <= angle_tol_deg:
-            return best_idx
-        return None
-
     def build_edges(self):
 
         positions = np.array(self.pos_index)
@@ -150,9 +129,6 @@ class HexLatticeGraph:
             for dir_index, vec in enumerate(self.vecs + [-v for v in self.vecs]):
                 predicted_pos = origin_pos + vec
 
-                # if np.array_equal(origin_pos, np.array([1540, 626])):
-                #     print("predicted pos", predicted_pos, "direction idx:", dir_index)
-
                 if not self._in_bounds(predicted_pos):
                     origin.neighbors[dir_index] = "OUT_OF_BOUNDS"
                     continue
@@ -161,22 +137,7 @@ class HexLatticeGraph:
                 distances = np.linalg.norm(positions - predicted_pos, axis=1)
                 close_indices = np.where(distances <= self.tolerance)[0]
 
-                # if np.array_equal(origin_pos, np.array([1540, 626])):
-                #     print(f"\n→ Looking for match for direction {dir_index}")
-                #     print(f"Predicted pos: {predicted_pos}")
-                #     for idx, pos in enumerate(positions):
-                #         dist = np.linalg.norm(pos - predicted_pos)
-                #         if dist <= self.tolerance + 5:  # slightly loosen threshold to check
-                #             print(f"  ✓ Candidate at {pos}, dist = {dist:.2f}, ID = {self.id_index[idx]}")
-
                 if len(close_indices) > 0:
-                    # if np.array_equal(origin_pos, np.array([1540, 626])):
-                    #     print(f"Predicted position: {predicted_pos}")
-                    #     print("Close candidates (within tolerance):")
-                    #     for idx in close_indices:
-                    #         coord = positions[idx]
-                    #         dist = distances[idx]
-                    #         print(f"  → ID: {self.id_index[idx]}, Position: {coord}, Distance: {dist:.2f}")
 
                     neighbor_id = self.id_index[close_indices[0]]
                     origin.neighbors[dir_index] = neighbor_id
