@@ -45,6 +45,10 @@ def visualize_hex_lattice_graph(graph, candidates=None, validated=None, max_node
                 vec = (graph.vecs + [-v for v in graph.vecs])[dir_idx]
                 end = node.position + vec
                 ax.plot([x, end[0]], [y, end[1]], linestyle="dashed", color="red", alpha=0.5)
+            elif neighbor == "CONFLICT":
+                vec = (graph.vecs + [-v for v in graph.vecs])[dir_idx]
+                end = node.position + vec / 2
+                ax.plot([x, end[0]], [y, end[1]], linestyle="dotted", color="cyan", alpha=0.5)
             else:
                 # draw real connection
                 if neighbor in graph.nodes:
