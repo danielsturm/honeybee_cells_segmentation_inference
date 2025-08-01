@@ -25,7 +25,7 @@ def show_cells_on_image(color_image, found_cells):
     plot_image(cells_on_image, len(found_cells))
 
 
-def visualize_hex_lattice_graph(graph, candidates=None, validated=None, max_nodes=300, figsize=(12, 12)):
+def visualize_hex_lattice_graph(graph, iteration, position, candidates=None, validated=None, figsize=(12, 12)):
     fig, ax = plt.subplots(figsize=figsize)
 
     # Draw nodes
@@ -73,7 +73,7 @@ def visualize_hex_lattice_graph(graph, candidates=None, validated=None, max_node
             ax.plot(final_pos[0], final_pos[1], marker="*", color="orange", markersize=5)
 
     ax.set_aspect("equal")
-    ax.set_title("Hex Lattice Graph Visualization")
+    ax.set_title(f"Iteration: {iteration} - position: {position}")
     ax.invert_yaxis()  # for image-like top-down view
 
     # Add legend

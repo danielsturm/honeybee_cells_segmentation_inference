@@ -10,9 +10,10 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from tqdm import tqdm
 import argparse
+from dataclasses import asdict, replace
 
 from segmentation_restruct.annotator.cell_finder.utils import save_cell_find_config_to_json, show_cells_on_image
-from segmentation_restruct.annotator.cell_finder.hex_graph_builder import HexLatticeGraph
+from segmentation_restruct.annotator.cell_finder.hex_graph_builder import HexLatticeGraph, HexGraphConfig
 
 
 class CellFinder:
@@ -22,6 +23,30 @@ class CellFinder:
         self.output_path = output_path if output_path else self.input_dir
         assert self.output_path.is_dir(), "output path does not exist"
         self.image_paths = self._find_images()
+
+    def run_with_graph_building(self, threshold, scale_factor, graph_config_base):
+
+        results = self.run_with_template_matching(threshold=threshold, scale_factor=scale_factor)
+
+        for img_name, data in results.items():
+            path, duration, num, color_img, matches = data
+            seed_points = np.array([(x, y) for x, y, _, _ in matches])
+            lattice_vectors = HexLatticeGraph.estimate_lattice_vectors_by_angle_clustering(seed_points)
+            h, w = color_img.shape[:2]
+            graph_config = replace(graph_config_base, image_size=(w, h))
+
+            # if img_name == "20240722_cam-0.png":
+            #     graph_config.debug = True
+
+            graph = HexLatticeGraph(seed_points=seed_points, lattice_vectors=lattice_vectors, config=graph_config)
+            graph.grow_graph_iteratively()
+
+            results[img_name] = (path, duration, num, color_img, graph.cell_positions)
+
+            if graph_config.debug:
+                show_cells_on_image(color_img, graph.cell_positions)
+
+        return results
 
     def run_with_template_matching(self, threshold: float = 0.725, scale_factor: float = 0.425):
         template_folder = Path(__file__).parent / "pattern_matching"
@@ -403,22 +428,16 @@ def main():
     elif args.method == "graph_building":
         threshold = 0.725
         scale_factor = 0.425
-        parameters = {"threshold": threshold, "scale_factor": scale_factor}
-        results = cell_finder.run_with_template_matching(threshold=threshold, scale_factor=scale_factor)
-        for img_name, data in results.items():
-            path, duration, num, color_img, matches = data
-            seed_points = np.array([(x, y) for x, y, _, _ in matches])
-            lattice_vectors = HexLatticeGraph.estimate_lattice_vectors_by_angle_clustering(seed_points)
-            graph = HexLatticeGraph(
-                seed_points=seed_points,
-                lattice_vectors=lattice_vectors,
-                tolerance=17.0,
-                image_size=tuple(reversed(color_img.shape[:2])),
-                bidirectional=False,
-            )
-            graph.grow_graph_iteratively(n_iterations=3)
-            results[img_name] = (path, duration, num, color_img, graph.cell_positions)
-            show_cells_on_image(color_img, graph.cell_positions)
+
+        graph_config_base = HexGraphConfig(
+            curve_aware_candidate_pred=False,
+            prefer_method="lattice_vector",
+            neighbour_pos_tolerance=22,
+            max_iterations=15,
+        )
+        parameters = {"threshold": threshold, "scale_factor": scale_factor, "graph_config": asdict(graph_config_base)}
+
+        results = cell_finder.run_with_graph_building(threshold, scale_factor, graph_config_base)
 
         cell_finder.save_artifacts(method="pattern matching", results=results, parameters=parameters)
 

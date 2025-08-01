@@ -1,34 +1,14 @@
-from dataclasses import dataclass, field
 import numpy as np
 import uuid
 from sklearn.neighbors import NearestNeighbors
 from sklearn.linear_model import LinearRegression
 from sklearn.cluster import DBSCAN, KMeans
 from collections import defaultdict
-from typing import Literal
+
 from scipy.spatial import KDTree
 
+from segmentation_restruct.annotator.cell_finder.models import HexGraphConfig, CellNode
 from segmentation_restruct.annotator.cell_finder.utils import visualize_hex_lattice_graph
-
-
-@dataclass
-class CellNode:
-    id: str
-    position: np.ndarray  # shape (2,)
-    neighbors: dict = field(default_factory=lambda: {i: None for i in range(6)})
-
-
-@dataclass
-class HexGraphConfig:
-    neighbour_pos_tolerance: float = 17.0
-    bidrectional_assignment: bool = False
-    image_size: tuple[int, int] | None = None
-    max_iterations: int = 3
-    curve_aware_candidate_pred: bool = True
-    cluster_vote_threshold: int = 2
-    dbscan_eps: float = 16.0
-    prefer_method: Literal["curve", "lattice_vector"] | None = "curve"
-    debug: bool = False
 
 
 class HexLatticeGraph:
@@ -37,98 +17,67 @@ class HexLatticeGraph:
         self.nodes = {}
         self.pos_index = []  # list of np.ndarray positions
         self.id_index = []  # list of UUIDs (same index as pos_index)
-        self.vecs = [np.array(v) for v in lattice_vectors]  # v1, v2, v3
+        self.vecs = [np.array(v) for v in lattice_vectors]
         self.config = config
+        self.graph_changed = False
 
     @property
     def cell_positions(self) -> list[tuple[int, int, int, float]]:
         return [(*cell, 24, 1.0) for cell in self.pos_index]
 
-    def grow_graph_iteratively(self, verbose=False):
+    def grow_graph_iteratively(self):
         for pt in self.seed_points:
             self.add_node(pt)
 
         self.build_edges()
 
-        # if self.config.debug:
-        #     print(self.nodes)
-
-        # visualize_hex_lattice_graph(self)
-
         for i in range(self.config.max_iterations):
-            if verbose:
-                print(f"\nIteration {i + 1}")
+            self.graph_changed = False
 
             # --- 1. Predict missing cells ---
             raw_candidates = self.collect_missing_neighbor_candidates()
-
-            # Early exit if nothing missing
             if not raw_candidates:
-                if verbose:
-                    print("No candidate predictions found. Stopping.")
                 break
 
             # --- 2. Cluster and validate ---
             validated = self.cluster_and_filter_candidates(raw_candidates)
-
-            if self.config.debug:
-                # print(f"iteration {i}", "upper predictor", self.get_node_by_position(1475, 463))
-                # print(f"iteration {i}", "lower predictor", self.get_node_by_position(1532, 484))
-                # print(f"iteration {i}", "existing node", self.get_node_by_position(1466, 542))
-                if i == 0:
-                    print(self.nodes)
-                    print(validated)
-                visualize_hex_lattice_graph(
-                    self, iteration=i, position="after validated", candidates=raw_candidates, validated=validated
-                )
-
-            if verbose:
-                print(f"Validated {len(validated)} new cells")
-
             if not validated:
-                if verbose:
-                    print("No validated predictions passed filtering. Stopping.")
                 break
+
+            # if self.config.debug:
+            #     if i == 0:
+            #         print(self.nodes)
+            #         print(validated)
+            #     visualize_hex_lattice_graph(
+            #         self, iteration=i, position="after validated", candidates=raw_candidates, validated=validated
+            #     )
 
             conflict_resolved = self.resolve_prediction_conflicts(validated=validated)
-            if self.config.debug:
-                #     print(f"iteration {i}", "upper predictor", self.get_node_by_position(1475, 463))
-                #     print(f"iteration {i}", "lower predictor", self.get_node_by_position(1532, 484))
-                #     print(f"iteration {i}", "existing node", self.get_node_by_position(1466, 542))
-                visualize_hex_lattice_graph(
-                    self,
-                    iteration=i,
-                    position="after conflict resolved",
-                    candidates=raw_candidates,
-                    validated=validated,
-                )
 
-            # --- 3. Add new predicted nodes ---
-            new_nodes = 0
-            for pos, support in conflict_resolved:
+            # if self.config.debug:
+            #     visualize_hex_lattice_graph(
+            #         self,
+            #         iteration=i,
+            #         position="after conflict resolved",
+            #         candidates=raw_candidates,
+            #         validated=validated,
+            #     )
+
+            for pos, _ in conflict_resolved:
                 self.add_node(position=pos)
-                new_nodes += 1
+                self.graph_changed = True
 
-            if verbose:
-                print(f"Added {new_nodes} new nodes")
-
-            # --- 4. Rebuild graph edges ---
             self.build_edges()
 
-            # visualize_hex_lattice_graph(self)
-
-            # If nothing was added, break early
-            if new_nodes == 0:
-                if verbose:
-                    print("No new nodes added this round. Stopping.")
+            if not self.graph_changed:
                 break
 
-    def resolve_prediction_conflicts(self, validated: list[dict], merge_radius: float = 22.0):
+    def resolve_prediction_conflicts(self, validated: list[dict]):
         if not validated:
             return []
 
         positions = np.array([pos for pos, _ in validated])
-        clustering = DBSCAN(eps=merge_radius, min_samples=1).fit(positions)
+        clustering = DBSCAN(eps=self.config.cluster_conflict_pred_eps, min_samples=1).fit(positions)
         labels = clustering.labels_
 
         grouped = defaultdict(list)
@@ -140,80 +89,61 @@ class HexLatticeGraph:
 
         for group in grouped.values():
 
+            # === CASE 1: group contains only one predicted node ===
             if len(group) == 1:
                 merged_pos, support = group[0]
+                nearby = self._get_nearby_existing_nodes(merged_pos, r=self.config.pred_merge_dist, node_tree=occupied)
 
                 # printing = False
                 # if np.allclose(merged_pos, np.array([1482.08010265, 521.48734209])):
                 #     printing = True
 
-                # Check if too close to an existing node
-                if occupied is not None:
-                    indices = occupied.query_ball_point(merged_pos, r=27.0)
-                    # if printing:
-                    #     print("nearby_indices", indices)
+                if nearby:
+                    if len(nearby) > 1:
+                        self._set_predictors_edges_to_conflict(support)
+                        continue
 
-                    if indices:
-                        # pick closest existing node among matches
-                        existing_pos = np.array(self.pos_index)[indices]
-                        dists = np.linalg.norm(existing_pos - merged_pos, axis=1)
-                        closest_idx = indices[np.argmin(dists)]
+                    existing_id = self.id_index[nearby[0]]
+                    existing_node = self.nodes[existing_id]
 
-                        existing_id = self.id_index[closest_idx]
-                        existing_node = self.nodes[existing_id]
-
-                        # if printing:
-                        #     print("merged", merged_pos, support)
-                        #     print("Closest existing node:", existing_node)
-
-                        # Check if existing node has all reverse edges missing (toward all predictors)
-                        # dont need to check the predictors, because they predicted so there was an edge missing
-                        all_missing_reverse = True
+                    if self._existing_has_open_edges(existing_node, support):
                         for s in support:
+                            pid = s["source"]
                             dir_idx = s["dir"]
-                            reverse_dir = (dir_idx + 3) % 6
-                            if existing_node.neighbors.get(reverse_dir) is not None:
-                                all_missing_reverse = False
-                                break
+                            if pid in self.nodes:
+                                self.nodes[pid].neighbors[dir_idx] = existing_id
+                                reverse_dir = self._get_reverse_direction(dir_idx)
+                                self.nodes[existing_id].neighbors[reverse_dir] = pid
+                                self.graph_changed = True
+                        continue
+                    else:
+                        self._set_predictors_edges_to_conflict(support)
+                        continue
 
-                        if all_missing_reverse:
-                            # Merge: assign mutual edges
-                            for s in support:
-                                pred_id = s["source"]
-                                dir_idx = s["dir"]
-                                if pred_id in self.nodes:
-
-                                    # if printing:
-                                    #     print("predictors", pred_id, self.nodes[pred_id])
-
-                                    self.nodes[pred_id].neighbors[dir_idx] = existing_id
-                                    reverse_dir = (dir_idx + 3) % 6
-                                    self.nodes[existing_id].neighbors[reverse_dir] = pred_id
-
-                            # if printing:
-                            #     print("existing node after conflict resolution", existing_node)
-
-                            continue  # merged successfully → skip further processing
-                        else:
-                            # Reject: mark predictors' edges as CONFLICT
-                            for s in support:
-                                pid = s["source"]
-                                dir_idx = s["dir"]
-                                if pid in self.nodes:
-                                    self.nodes[pid].neighbors[dir_idx] = "CONFLICT"
-                            continue
+                # Check if close (but not too close) to existing node (25–40) and discard/conflict
+                # this can probably be removed, is already covered in the final check
+                extended_nearby = self._get_nearby_existing_nodes(
+                    merged_pos, r=self.config.min_dist_nodes, node_tree=occupied
+                )
+                if extended_nearby:
+                    self._set_predictors_edges_to_conflict(support)
+                    continue
 
                 final_validated.append(group[0])
                 continue
 
-            # Too many predictions clustered — discard all, mark their predictor edges
+            # === CASE 2: group too large — conflict ===
             if len(group) > 3:
                 for _, support in group:
-                    for s in support:
-                        pid = s["source"]
-                        dir_idx = s["dir"]
-                        if pid in self.nodes:
-                            self.nodes[pid].neighbors[dir_idx] = "CONFLICT"
+                    self._set_predictors_edges_to_conflict(support)
+                continue
+
+            # === CASE 3: group of 2 or 3 ===
+            center = np.mean([pos for pos, _ in group], axis=0)
+            nearby = self._get_nearby_existing_nodes(center, r=self.config.pred_merge_dist, node_tree=occupied)
+            if nearby:
+                for _, support in group:
+                    self._set_predictors_edges_to_conflict(support)
                 continue
 
             # Merge support and check for conflicting predictor directions
@@ -232,19 +162,54 @@ class HexLatticeGraph:
                     break
 
             if conflict:
-                for s in all_support:
-                    pid = s["source"]
-                    dir_idx = s["dir"]
-                    if pid in self.nodes:
-                        self.nodes[pid].neighbors[dir_idx] = "CONFLICT"
+                self._set_predictors_edges_to_conflict(all_support)
                 continue
 
             # No conflict — merge and assign directly
-            merged_pos = np.mean([pos for pos, _ in group], axis=0)
-            self._add_node_with_edge_assignments(merged_pos, all_support)
-            # final_validated.append((node.position, all_support)) # not needed because already done
+            self._add_node_with_edge_assignments(center, all_support)
+            self.graph_changed = True
 
-        return final_validated
+        return self._final_conflict_check(final_validated, occupied)
+
+    def _final_conflict_check(self, final_validated: list[tuple[np.ndarray, list[dict]]], existing: KDTree | None):
+        if not final_validated:
+            return []
+
+        validated_positions = [pos for pos, _ in final_validated]
+        internal_tree = KDTree(validated_positions) if validated_positions else None
+
+        kept = []
+
+        for i, (pos, support) in enumerate(final_validated):
+            conflict = False
+
+            if existing is not None:
+                existing_close = existing.query_ball_point(pos, r=self.config.min_dist_nodes)
+                if existing_close:
+                    conflict = True
+
+            if not conflict and internal_tree is not None:
+                close_indices = internal_tree.query_ball_point(pos, r=self.config.min_dist_nodes)
+                if any(idx != i for idx in close_indices):
+                    conflict = True
+
+            if conflict:
+                self._set_predictors_edges_to_conflict(support)
+            else:
+                kept.append((pos, support))
+
+        return kept
+
+    def _get_reverse_direction(self, dir_idx):
+        return (dir_idx + 3) % 6
+
+    def _existing_has_open_edges(self, existing_node, support: list[dict]) -> bool:
+        for s in support:
+            dir_idx = s["dir"]
+            reverse_dir = self._get_reverse_direction(dir_idx)
+            if existing_node.neighbors.get(reverse_dir) is not None:
+                return False
+        return True
 
     def _get_nearby_existing_nodes(self, pos, r: float, node_tree: KDTree | None) -> list:
         if node_tree is None:
@@ -260,7 +225,7 @@ class HexLatticeGraph:
 
     def _add_node_with_edge_assignments(self, position: np.ndarray, support: list[dict]):
         rounded_pos = np.round(position).astype(int)
-        node = self.add_node(rounded_pos)  # Uses standard UUID assignment
+        node = self.add_node(rounded_pos)
 
         for s in support:
             pred_id = s["source"]
@@ -273,7 +238,7 @@ class HexLatticeGraph:
             self.nodes[pred_id].neighbors[dir_idx] = node.id
 
             if self.config.bidrectional_assignment:
-                reverse_dir = (dir_idx + 3) % 6
+                reverse_dir = self._get_reverse_direction(dir_idx)
                 self.nodes[node.id].neighbors[reverse_dir] = pred_id
 
         return node
@@ -281,7 +246,6 @@ class HexLatticeGraph:
     def add_node(self, position):
         rounded_pos = np.round(position).astype(int)
         node_id = str(uuid.uuid4())
-        # node = CellNode(id=node_id, position=np.array(position))
         node = CellNode(id=node_id, position=rounded_pos)
         self.nodes[node_id] = node
         self.pos_index.append(node.position)
@@ -298,9 +262,6 @@ class HexLatticeGraph:
     def build_edges(self):
 
         positions = np.array(self.pos_index)
-        # search_radius = max(np.linalg.norm(v) for v in self.vecs) + self.config.neighbour_pos_tolerance
-        # nbrs = NearestNeighbors(radius=search_radius)  # TODO: is this used?
-        # nbrs.fit(positions)
 
         for _, node_id in enumerate(self.id_index):
             origin = self.nodes[node_id]
@@ -326,7 +287,7 @@ class HexLatticeGraph:
 
                     neighbor_id = self.id_index[close_indices[0]]
                     neighbor_node = self.nodes[neighbor_id]
-                    reverse_dir = (dir_index + 3) % 6
+                    reverse_dir = self._get_reverse_direction(dir_index)
                     reverse_value = neighbor_node.neighbors[reverse_dir]
 
                     # assign conflict and skip if reverse value is OUT_OF_BOUNDS, CONFLICT or another id
@@ -339,7 +300,6 @@ class HexLatticeGraph:
 
                     # Optional: bidirectional assignment
                     if self.config.bidrectional_assignment:
-                        # reverse_dir = (dir_index + 3) % 6
                         self.nodes[neighbor_id].neighbors[reverse_dir] = node_id
 
     def collect_missing_neighbor_candidates(self):
@@ -362,7 +322,7 @@ class HexLatticeGraph:
 
                 if self.config.curve_aware_candidate_pred:
                     # Step back along the opposite direction
-                    back_dir = (dir_idx + 3) % 6
+                    back_dir = self._get_reverse_direction(dir_idx)
                     prev1_id = node.neighbors[back_dir]
 
                     if prev1_id is not None and prev1_id != "OUT_OF_BOUNDS":
@@ -408,7 +368,7 @@ class HexLatticeGraph:
         pos_array = np.array([pos for (pos, *_) in candidates])
 
         # Cluster nearby predictions using DBSCAN
-        clustering = DBSCAN(eps=self.config.dbscan_eps, min_samples=1).fit(pos_array)
+        clustering = DBSCAN(eps=self.config.cluster_pred_eps, min_samples=1).fit(pos_array)
         labels = clustering.labels_
 
         clustered = defaultdict(list)
@@ -509,45 +469,3 @@ class HexLatticeGraph:
         lattice_vectors = unit_vectors * avg_dist
 
         return lattice_vectors
-
-
-# =========================================================================================================
-
-# TODO: Function to remove two cells that are too close to each other, when building edges
-# TODO: can it happen that A assigns B as neighbor but B does not do with A? relates to bidirectional assignment
-# TODO: lattice vector fallback in position prediction is applied immediately. could also be applied later, if curve gets stuck and still missing neighbors
-# TODO: prefer method in cluster_and_filter_candidates only filters out the prefered method and ignores the other. if the prefered are too few, it skips.
-#   should be rather taking all candidates and just weight the ones that are prefered when calculating new point
-
-# =========================================================================================================
-
-# - if two final predictions are too close they are both removed and all valid cells around that have an open edge in this direction are marked at the edge as not_sure
-# - or at least find the cells that predicted that predicton and assign the edges as not_sure
-# - or two final predictions that are within a distance (eg 20) will form their mean (a super prediction) and all predictors will conntect to this guy. (will that work with build_edges?)
-# - if the predicted point is too close to a real point, both could be removed. the real point just removed and the predicted also but also assign its predictors as not_sure
-# - alternative: if predicted point too close to existing node, just assign the edges of the predictors to that existing node.
-# - related to the previous. could also first check if the real point has a missing edges in that direction of the predictors. if not just mark as not suere
-# - what can you do about the iterations. i dont know how long it takes until all cells are found (could wait until only few things are changing) but if there is an error
-
-# possiblities:
-# - two or three final_predicted fall together
-#   - compute the average position and assign the edges to the predictors of each final_predicted
-#   - check if all predictors predict their final_predicted to different directions.
-#   - if two or more predictors predict to the same direction discard all final_predicted and mark the related missing edges of predictors as not_sure
-# - more than three final_predicted fall together (each node has six neighbors and min two build a final_predicted)
-#   - this should not happen. discard all and mark the edges of all predictors of all final_predicted as not_sure
-# - one final_predicted is next/too close to an existing_node
-#   - does this existing_node have missing edges in the direction of the predictors?
-#   - do the predictors of the final_predicted have missing edges in that direction? (this is not relevant. should not happen, otherwise the would not predict)
-#   - if yes merge.
-#   - if no, discard and mark posssible open edges as not_sure
-# - a final_predicted is next to another final_predicted and existing_node
-#   - in this case discard all final_predicted and mark all edges of the responsible predictors as not_sure
-# - two existing_nodes should be neighbors but are not connected, because the angle is too much off or they are too distant
-#   - could increase the tolerance but don't know if this affects the rest of the procedure.
-#   - leve it for now. maybe these missing edges can be ignored
-
-#  =========================================================================================================
-# Stopping Problem
-# - create a flag that is set to true each time a node is added to the graph per loop. if the flag is true the loop continues.
-# - still have a max_iterations number to prevent infinite loop in an unforseen case

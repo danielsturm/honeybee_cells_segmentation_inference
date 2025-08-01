@@ -21,7 +21,7 @@ class CellFindPerformanceValidator:
             self.gt_path = Path(__file__).parent / "ground_truth"
         self.matched_paths = self._load_paths()
 
-    def run_performance_validation(self, threshold: float = 15.0, visualize: bool = False) -> None:
+    def run_performance_validation(self, threshold: float = 15.0, visualize: bool = False):
         all_results = []
 
         for pair in self.matched_paths:
@@ -63,6 +63,8 @@ class CellFindPerformanceValidator:
             config = self._load_predictions_config()
             self._create_out_dir()
             save_html_performance_report(all_results, config, self.results_path)
+
+        return total_tp, total_fp, total_fn, precision, recall, f1
 
     def _create_out_dir(self) -> None:
         Path.mkdir(self.results_path, exist_ok=True)
