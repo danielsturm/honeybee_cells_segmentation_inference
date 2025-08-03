@@ -25,7 +25,7 @@ class HexLatticeGraph:
     def cell_positions(self) -> list[tuple[int, int, int, float]]:
         return [(*cell, 24, 1.0) for cell in self.pos_index]
 
-    def grow_graph_iteratively(self):
+    def grow_graph_iteratively(self) -> None:
         for pt in self.seed_points:
             self.add_node(pt)
 
@@ -44,24 +44,10 @@ class HexLatticeGraph:
             if not validated:
                 break
 
-            # if self.config.debug:
-            #     if i == 0:
-            #         print(self.nodes)
-            #         print(validated)
-            #     visualize_hex_lattice_graph(
-            #         self, iteration=i, position="after validated", candidates=raw_candidates, validated=validated
-            #     )
+            if self.config.debug:
+                visualize_hex_lattice_graph(self, i, "validated", raw_candidates, validated)
 
             conflict_resolved = self.resolve_prediction_conflicts(validated=validated)
-
-            # if self.config.debug:
-            #     visualize_hex_lattice_graph(
-            #         self,
-            #         iteration=i,
-            #         position="after conflict resolved",
-            #         candidates=raw_candidates,
-            #         validated=validated,
-            #     )
 
             for pos, _ in conflict_resolved:
                 self.add_node(position=pos)
@@ -72,7 +58,7 @@ class HexLatticeGraph:
             if not self.graph_changed:
                 break
 
-    def resolve_prediction_conflicts(self, validated: list[dict]):
+    def resolve_prediction_conflicts(self, validated: list[dict]) -> list[dict]:
         if not validated:
             return []
 
@@ -107,14 +93,7 @@ class HexLatticeGraph:
                     existing_node = self.nodes[existing_id]
 
                     if self._existing_has_open_edges(existing_node, support):
-                        for s in support:
-                            pid = s["source"]
-                            dir_idx = s["dir"]
-                            if pid in self.nodes:
-                                self.nodes[pid].neighbors[dir_idx] = existing_id
-                                reverse_dir = self._get_reverse_direction(dir_idx)
-                                self.nodes[existing_id].neighbors[reverse_dir] = pid
-                                self.graph_changed = True
+                        self._merge_predicted_with_existing(support, existing_id)
                         continue
                     else:
                         self._set_predictors_edges_to_conflict(support)
@@ -147,19 +126,7 @@ class HexLatticeGraph:
                 continue
 
             # Merge support and check for conflicting predictor directions
-            seen = set()
-            conflict = False
-            all_support = []
-            for _, support in group:
-                for s in support:
-                    pair = (s["source"], s["dir"])
-                    if pair in seen:
-                        conflict = True
-                        break
-                    seen.add(pair)
-                    all_support.append(s)
-                if conflict:
-                    break
+            conflict, all_support = self._merge_predcitions_and_check_conflict(group)
 
             if conflict:
                 self._set_predictors_edges_to_conflict(all_support)
@@ -171,7 +138,33 @@ class HexLatticeGraph:
 
         return self._final_conflict_check(final_validated, occupied)
 
-    def _final_conflict_check(self, final_validated: list[tuple[np.ndarray, list[dict]]], existing: KDTree | None):
+    def _merge_predcitions_and_check_conflict(self, group):
+        seen = set()
+        conflict = False
+        all_support = []
+        for _, support in group:
+            for s in support:
+                pair = (s["source"], s["dir"])
+                if pair in seen:
+                    conflict = True
+                else:
+                    seen.add(pair)
+                all_support.append(s)
+        return conflict, all_support
+
+    def _merge_predicted_with_existing(self, support: list[dict], existing_id: str) -> None:
+        for s in support:
+            pid = s["source"]
+            dir_idx = s["dir"]
+            if pid in self.nodes:
+                self.nodes[pid].neighbors[dir_idx] = existing_id
+                reverse_dir = self._get_reverse_direction(dir_idx)
+                self.nodes[existing_id].neighbors[reverse_dir] = pid
+                self.graph_changed = True
+
+    def _final_conflict_check(
+        self, final_validated: list[tuple[np.ndarray, list[dict]]], existing: KDTree | None
+    ) -> list[dict]:
         if not final_validated:
             return []
 
@@ -200,7 +193,7 @@ class HexLatticeGraph:
 
         return kept
 
-    def _get_reverse_direction(self, dir_idx):
+    def _get_reverse_direction(self, dir_idx: int) -> int:
         return (dir_idx + 3) % 6
 
     def _existing_has_open_edges(self, existing_node, support: list[dict]) -> bool:
@@ -252,14 +245,14 @@ class HexLatticeGraph:
         self.id_index.append(node_id)
         return node
 
-    def _in_bounds(self, pos):
+    def _in_bounds(self, pos) -> bool:
         if self.config.image_size is None:
             return True
         x, y = pos
         width, height = self.config.image_size
         return 0 <= x < width and 0 <= y < height
 
-    def build_edges(self):
+    def build_edges(self) -> None:
 
         positions = np.array(self.pos_index)
 
@@ -325,11 +318,11 @@ class HexLatticeGraph:
                     back_dir = self._get_reverse_direction(dir_idx)
                     prev1_id = node.neighbors[back_dir]
 
-                    if prev1_id is not None and prev1_id != "OUT_OF_BOUNDS":
+                    if self._is_uuid(prev1_id):
                         prev1 = self.nodes[prev1_id]
                         prev2_id = prev1.neighbors[back_dir]
 
-                        if prev2_id is not None and prev2_id != "OUT_OF_BOUNDS":
+                        if self._is_uuid(prev2_id):
                             prev2 = self.nodes[prev2_id]
 
                             # Collect positions: [prev2, prev1, current]
@@ -358,6 +351,13 @@ class HexLatticeGraph:
                 candidates.append((pred_pos, node_id, dir_idx, method))
 
         return candidates
+
+    def _is_uuid(self, neighbor_ref: str | None) -> bool:
+        try:
+            uuid.UUID(str(neighbor_ref))
+            return True
+        except ValueError:
+            return False
 
     def cluster_and_filter_candidates(self, candidates):
 

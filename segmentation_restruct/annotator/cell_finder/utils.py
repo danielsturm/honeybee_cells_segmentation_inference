@@ -92,7 +92,7 @@ def visualize_hex_lattice_graph(graph, iteration, position, candidates=None, val
     plt.show()
 
 
-def save_html_performance_report(results, config, output_dir: Path, timestamped=True):
+def save_html_performance_report(results, config, output_dir: Path, timestamped=True) -> str:
     # output_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     report_name = f"cell_eval_report_{timestamp}.html" if timestamped else "cell_eval_report.html"
@@ -176,6 +176,8 @@ def save_html_performance_report(results, config, output_dir: Path, timestamped=
         f.write("\n".join(html_parts))
 
     print(f"HTML report saved to: {report_path}")
+
+    return report_name
 
 
 def save_cell_find_config_to_json(out_path: Path, method: str, **kwargs):

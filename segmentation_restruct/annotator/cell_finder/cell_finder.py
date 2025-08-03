@@ -150,7 +150,7 @@ class CellFinder:
             for future in tqdm(as_completed(futures), total=len(futures), desc=f"Running {method}"):
                 img_path, duration, num_cells, color_image, matches = future.result()
                 combined_results[img_path.name] = (img_path, duration, num_cells, color_image, matches)
-                tqdm.write(f"Processed {img_path.name} in {duration:.2f}s - found {num_cells} cells")
+                # tqdm.write(f"Processed {img_path.name} in {duration:.2f}s - found {num_cells} cells")
 
                 # show_cells_on_image(color_image, matches)  # only for testing
         return combined_results
@@ -373,21 +373,27 @@ class CellFinder:
 
 def main():
     parser = argparse.ArgumentParser(description="Run CellFinder with a chosen detection method.")
-    parser.add_argument(
-        "method",
-        choices=[
-            "template_matching",
-            "circle_hough_transform",
-            "hybrid",
-            "generalized_hough_transform",
-            "graph_building",
-        ],
-        help="Detection method to use.",
-    )
     parser.add_argument("input_path", type=str, help="Path to input image directory.")
     parser.add_argument(
         "--output_path", type=str, default=None, help="Optional path to output directory. Defaults to input path."
     )
+
+    subparsers = parser.add_subparsers(dest="method", required=True, help="Detection method to use.")
+
+    for method_name in [
+        "template_matching",
+        "circle_hough_transform",
+        "hybrid",
+    ]:
+        subparsers.add_parser(method_name, help=f"Use {method_name} detection method.")
+
+    graph_parser = subparsers.add_parser("graph_building", help="Use graph-based detection.")
+    graph_parser.add_argument(
+        "--curve_aware",
+        action="store_true",
+        help="curve-aware mode to estimate lattice (only valid with graph_building).",
+    )
+
     args = parser.parse_args()
 
     input_path = Path(args.input_path)
@@ -412,6 +418,8 @@ def main():
         cell_finder.run_hybrid_detection()
 
     elif args.method == "generalized_hough_transform":
+        """This is currently not supported, since the results are too poor"""
+
         parameters = {
             "min_angle": 0,
             "max_angle": 360,
@@ -430,10 +438,8 @@ def main():
         scale_factor = 0.425
 
         graph_config_base = HexGraphConfig(
-            curve_aware_candidate_pred=False,
-            prefer_method="lattice_vector",
-            neighbour_pos_tolerance=22,
-            max_iterations=15,
+            curve_aware_candidate_pred=args.curve_aware,
+            prefer_method="curve" if args.curve_aware else "lattice_vector",
         )
         parameters = {"threshold": threshold, "scale_factor": scale_factor, "graph_config": asdict(graph_config_base)}
 

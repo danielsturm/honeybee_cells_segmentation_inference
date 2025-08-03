@@ -59,12 +59,13 @@ class CellFindPerformanceValidator:
         print(f"Total TP: {total_tp}, FP: {total_fp}, FN: {total_fn}")
         print(f"Precision: {precision:.2f}, Recall: {recall:.2f}, F1 Score: {f1:.2f}")
 
+        report_name = None
         if visualize:
             config = self._load_predictions_config()
             self._create_out_dir()
-            save_html_performance_report(all_results, config, self.results_path)
+            report_name = save_html_performance_report(all_results, config, self.results_path)
 
-        return total_tp, total_fp, total_fn, precision, recall, f1
+        return total_tp, total_fp, total_fn, precision, recall, f1, report_name
 
     def _create_out_dir(self) -> None:
         Path.mkdir(self.results_path, exist_ok=True)
