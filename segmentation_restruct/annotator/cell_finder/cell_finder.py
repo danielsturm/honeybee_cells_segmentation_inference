@@ -13,7 +13,8 @@ import argparse
 from dataclasses import asdict, replace
 
 from segmentation_restruct.annotator.cell_finder.utils import save_cell_find_config_to_json, show_cells_on_image
-from segmentation_restruct.annotator.cell_finder.hex_graph_builder import HexLatticeGraph, HexGraphConfig
+from segmentation_restruct.annotator.cell_finder.hex_graph_builder import HexLatticeGraph
+from segmentation_restruct.annotator.cell_finder.models import HexGraphConfig
 
 
 class CellFinder:

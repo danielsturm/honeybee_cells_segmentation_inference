@@ -144,3 +144,5 @@ ffmpeg.exe
 cells.json
 /segmentation_restruct/annotator/data/
 !segmentation_restruct/annotator/cell_finder/pattern_matching/*
+!segmentation_restruct/annotator/cell_finder/performance_validation/ground_truth/*
+segmentation_restruct/annotator/cell_finder/performance_validation/results/

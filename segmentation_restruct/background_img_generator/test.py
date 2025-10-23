@@ -101,6 +101,20 @@ config_9 = BgImageGenConfig(
     mask_dilation=15,
     median_computation="cupy",
 )
+config_10a = BgImageGenConfig(
+    window_size=10,
+    num_median_images=220,
+    apply_clahe="intermediate",
+    mask_dilation=0,
+    median_computation="cupy",
+)
+config_10b = BgImageGenConfig(
+    window_size=10,
+    num_median_images=220,
+    apply_clahe="post",
+    mask_dilation=15,
+    median_computation="cupy",
+)
 
 
 def test_bg_img_gen(config):
@@ -120,7 +134,7 @@ def test_bg_img_gen(config):
 
 
 def test_different_configs(config):
-    out_dir = Path(r"D:\Bachelorarbeit\bee_videos\extracted_frames_ival_30sec")
+    out_dir = Path(r"D:\Bachelorarbeit\bee_videos\extracted_frames_ival_60sec")
 
     # in_dir = Path(r"D:\Bachelorarbeit\bee_videos\cam-0")
 
@@ -132,4 +146,4 @@ def test_different_configs(config):
     big.process_rolling_backgrounds(sampling_rate=1)
 
 
-test_different_configs(config_6b)
+test_different_configs(config_10a)

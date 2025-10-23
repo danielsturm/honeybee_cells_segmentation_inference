@@ -27,6 +27,7 @@ TODO:   - ✅ point size according to actual cell size
         - ✅ a filed should indicate image x/of n. between arrows
         - initial label type should be unlabled
         - ✅ Logging!!!
+        - Logger should have a [field] with the class name
 
 TODO:   - Add key "c" to clear the BrushMask layer after selection
         - Add visual feedback (e.g., print selected labels/counts)
@@ -170,11 +171,10 @@ class HoneyCombAnnotator:
                 "radius": radii,
             }
         )
+        self.points_layer.selected_data = set()  # type: ignore
         self.points_layer.data = points
-
         self.points_layer.features = features
         self.points_layer.size = radii
-        self.points_layer.selected_data = set()  # type: ignore
         self._update_point_borders()
         new_data = np.zeros(image.shape[:2], dtype=np.uint8)
         self.brush_layer.data = cast(LayerDataProtocol, new_data)
