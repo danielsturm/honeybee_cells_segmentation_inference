@@ -142,6 +142,7 @@ dmypy.json
 # custom
 ffmpeg.exe
 cells.json
+/results
 /segmentation_restruct/annotator/data/
 !segmentation_restruct/annotator/cell_finder/pattern_matching/*
 !segmentation_restruct/annotator/cell_finder/performance_validation/ground_truth/*
