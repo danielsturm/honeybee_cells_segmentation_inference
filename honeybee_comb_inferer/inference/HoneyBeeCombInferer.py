@@ -83,7 +83,7 @@ class HoneyBeeCombInferer:
         seed_everything(self.config["random_seed"])
 
     def _get_num_classes_from_config(self):
-        return len(self.config)
+        return len(self.cmap)
 
     def infer(
         self,

@@ -1,8 +1,9 @@
 """
-Example script demonstrating CombMaskGenerator usage.
+Example script demonstrating CombMaskGenerator and CombMaskGeneratorUNet usage.
 
-This script shows how to generate binary comb masks from segmentation predictions,
-combining all cell types and applying morphological closing to fill gaps.
+This script shows how to generate binary comb masks from:
+1. Multi-class segmentation predictions (CombMaskGenerator)
+2. Custom-trained UNet model (CombMaskGeneratorUNet)
 """
 
 from pathlib import Path
