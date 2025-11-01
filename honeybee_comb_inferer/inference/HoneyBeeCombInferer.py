@@ -64,10 +64,15 @@ class HoneyBeeCombInferer:
         self.config = self._get_config(config)
         self.cmap, self.patches = get_cmap_and_labels_for_plotting(label_classes_config)
 
+        # Get num_classes from label config (includes +1 for background)
+        num_classes = self._get_num_classes_from_config()
+        self.num_classes = num_classes
+
         self.model = HoneyBeeCombSegmentationModel(
             model_name=model_name,
             device=device,
             path_to_pretrained_models=path_to_pretrained_models,
+            num_classes=num_classes,
         )
 
         if sw_inference:
@@ -76,6 +81,9 @@ class HoneyBeeCombInferer:
             )
 
         seed_everything(self.config["random_seed"])
+
+    def _get_num_classes_from_config(self):
+        return len(self.config)
 
     def infer(
         self,
