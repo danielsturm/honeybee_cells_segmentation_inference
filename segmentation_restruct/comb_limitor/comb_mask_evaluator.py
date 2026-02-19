@@ -407,6 +407,112 @@ class CombMaskEvaluator:
         plt.tight_layout()
         return fig, axes
 
+    def visualize_individual_samples(
+        self,
+        predicted_masks: List[np.ndarray],
+        ground_truth_masks: List[np.ndarray],
+        input_images: Optional[List[np.ndarray]] = None,
+        figsize_per_subplot: Tuple[float, float] = (5, 5),
+    ) -> List[Tuple[plt.Figure, plt.Axes]]:
+        """
+        Create individual plots for each sample (for thesis/publication).
+
+        Each sample gets its own figure with 4 subplots in a row:
+        [Input Image, Ground Truth, Prediction, Error Map]
+
+        No titles, no image names - clean plots suitable for academic publications.
+
+        Parameters
+        ----------
+        predicted_masks : List[np.ndarray]
+            List of predicted masks.
+        ground_truth_masks : List[np.ndarray]
+            List of ground truth masks.
+        input_images : Optional[List[np.ndarray]], default=None
+            Optional list of input images. If None, only shows GT, Prediction, Error Map.
+        figsize_per_subplot : Tuple[float, float], default=(5, 5)
+            Size of each subplot (width, height) in inches.
+
+        Returns
+        -------
+        List[Tuple[plt.Figure, plt.Axes]]
+            List of (figure, axes) tuples, one per sample.
+
+        Example
+        -------
+        >>> # Generate individual plots for thesis
+        >>> figures = evaluator.visualize_individual_samples(
+        ...     predicted_masks=predicted_masks,
+        ...     ground_truth_masks=ground_truth_masks,
+        ...     input_images=input_images
+        ... )
+        >>>
+        >>> # Save each figure with high quality
+        >>> for i, (fig, axes) in enumerate(figures):
+        ...     fig.savefig(f'thesis_figures/sample_{i+1}.png', dpi=300, bbox_inches='tight')
+        ...     plt.close(fig)
+        """
+        if len(predicted_masks) != len(ground_truth_masks):
+            raise ValueError(
+                f"Number of predicted masks ({len(predicted_masks)}) must match "
+                f"number of ground truth masks ({len(ground_truth_masks)})"
+            )
+
+        show_input = input_images is not None
+        if show_input and len(input_images) != len(predicted_masks):
+            raise ValueError(
+                f"Number of input images ({len(input_images)}) must match "
+                f"number of masks ({len(predicted_masks)})"
+            )
+
+        n_subplots = 4 if show_input else 3
+        fig_width = figsize_per_subplot[0] * n_subplots
+        fig_height = figsize_per_subplot[1]
+
+        figures = []
+
+        for idx in range(len(predicted_masks)):
+            pred_mask = predicted_masks[idx]
+            gt_mask = ground_truth_masks[idx]
+
+            # Binarize masks
+            pred_binary = self._binarize(pred_mask)
+            gt_binary = self._binarize(gt_mask)
+            error_map = self._create_error_map(pred_binary, gt_binary)
+
+            # Create figure
+            fig, axes = plt.subplots(1, n_subplots, figsize=(fig_width, fig_height))
+
+            subplot_idx = 0
+
+            # Plot input image if provided
+            if show_input:
+                input_img = input_images[idx]
+                axes[subplot_idx].imshow(
+                    input_img, cmap="gray" if len(input_img.shape) == 2 else None
+                )
+                axes[subplot_idx].axis("off")
+                subplot_idx += 1
+
+            # Plot ground truth
+            axes[subplot_idx].imshow(gt_binary, cmap="gray", vmin=0, vmax=1)
+            axes[subplot_idx].axis("off")
+            subplot_idx += 1
+
+            # Plot prediction
+            axes[subplot_idx].imshow(pred_binary, cmap="gray", vmin=0, vmax=1)
+            axes[subplot_idx].axis("off")
+            subplot_idx += 1
+
+            # Plot error map
+            axes[subplot_idx].imshow(error_map)
+            axes[subplot_idx].axis("off")
+
+            plt.tight_layout()
+            figures.append((fig, axes))
+
+        return figures
+
     def visualize_batch(
         self,
         predicted_masks: List[np.ndarray],
